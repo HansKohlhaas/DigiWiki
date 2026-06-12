@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.env
+.env.*
+*.sqlite3
+*.db
+*.log
+chroma_test_db/
+Duplikate_Archiv/
+Mail_Downloads/
+Mail_Uploads/
+wiki_cleanup_pool/

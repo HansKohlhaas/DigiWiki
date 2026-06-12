@@ -1,0 +1,5 @@
+Gruppe;Anzahl Kopien;Dateipfade
+Duplikat-Gruppe 1;2;./Test_Daten\1_duplikate_finden.py
+Duplikat-Gruppe 1;2;./Test_Daten\import os.py
+Duplikat-Gruppe 2;2;./Test_Daten\Brandvoice_Hans1.docx
+Duplikat-Gruppe 2;2;./Test_Daten\Brandvoice_Hans2.docx
