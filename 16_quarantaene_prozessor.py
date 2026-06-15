@@ -2,6 +2,7 @@ import os
 import json
 import time
 from dotenv import load_dotenv
+from config import CHROMA_DB_PATH, WATCH_QUARANTINE_PATH, WATCH_STATE_PATH, ist_beobachtete_datei
 
 load_dotenv()
 
@@ -11,9 +12,9 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_chroma import Chroma
 
-DATENBANK_ORDNER = "./digibest_chroma_db"
-STATUS_DATEI = "./wiki_stand.json"
-QUARANTAENE_DATEI = "./wiki_quarantaene.json"
+DATENBANK_ORDNER = str(CHROMA_DB_PATH)
+STATUS_DATEI = WATCH_STATE_PATH
+QUARANTAENE_DATEI = WATCH_QUARANTINE_PATH
 
 def verarbeite_schwere_datei(pfad):
     """Zwingt das System, diese eine Datei mit viel Geduld einzulesen."""

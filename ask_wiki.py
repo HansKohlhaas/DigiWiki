@@ -5,13 +5,14 @@ from langchain_chroma import Chroma
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_classic.chains.combine_documents import create_stuff_documents_chain
 from langchain_classic.chains import create_retrieval_chain
+from config import CHROMA_DB_PATH, ist_gueltiger_wissensbereich, liste_wissensbereiche
 
 # 1. WICHTIG: ChromaDB Telemetrie hart abschalten (verhindert Netzwerk-Hänger)
 os.environ["ANONYMIZED_TELEMETRY"] = "False"
 
 load_dotenv()
 
-DATENBANK_ORDNER = r"F:\digibest_chroma_db"
+DATENBANK_ORDNER = str(CHROMA_DB_PATH)
 
 # --- DER NEUE C-LEVEL SYSTEM-PROMPT ---
 SYSTEM_PROMPT = """Du bist die exklusive, hochprofessionelle KI-Assistenz für den Geschäftsführer von DigiBest.
@@ -31,7 +32,15 @@ BISHERIGER GESPRÄCHSVERLAUF:
 {chat_historie}
 """
 
-def frage_das_wiki(aktuelle_frage, historie_text=""):
+def baue_retriever(vektor_datenbank, bereich=None, max_treffer=5):
+    if bereich and bereich != "vollzugriff":
+        if not ist_gueltiger_wissensbereich(bereich):
+            raise ValueError(f"Unbekannter Wissensbereich: {bereich}. Verfuegbar: {', '.join(liste_wissensbereiche())}")
+        return vektor_datenbank.as_retriever(search_kwargs={"k": max_treffer, "filter": {"bereich": bereich}})
+    return vektor_datenbank.as_retriever(search_kwargs={"k": max_treffer})
+
+
+def frage_das_wiki(aktuelle_frage, historie_text="", bereich=None, max_treffer=5):
     """
     Fragt die Datenbank ab. Akzeptiert optional den bisherigen Gesprächsverlauf.
     """
@@ -39,7 +48,7 @@ def frage_das_wiki(aktuelle_frage, historie_text=""):
         # 2. Datenbank und KI laden
         embeddings = GoogleGenerativeAIEmbeddings(model="models/gemini-embedding-2")
         vektor_datenbank = Chroma(persist_directory=DATENBANK_ORDNER, embedding_function=embeddings)
-        retriever = vektor_datenbank.as_retriever(search_kwargs={"k": 5}) # Holt die 5 besten Treffer
+        retriever = baue_retriever(vektor_datenbank, bereich=bereich, max_treffer=max_treffer)
         
         # 3. Timeout und Retries einbauen, um Endlos-Warten zu verhindern
         llm = ChatGoogleGenerativeAI(model="gemini-pro", temperature=0.1, timeout=15, max_retries=1)

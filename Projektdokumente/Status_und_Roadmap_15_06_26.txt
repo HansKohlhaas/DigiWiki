@@ -1,0 +1,55 @@
+DigiBest Wiki Projekt: Statusbericht & Roadmap
+1. Technischer Softwarestand
+
+    Architektur: Streamlit Web-UI mit Python-Backend; asynchrone Prozessierung der Sprachkommandos.
+
+    Datenbank-Stack:
+
+        Access-Datenbank (.accdb): Zentrale CRM-Struktur (Personen, Firmen, Whitelist-Kontakte).
+
+        Vektor-Datenbank (ChromaDB): Persistente Speicherung der Embeddings (Google Gemini) für semantische Volltextsuche.
+
+    KI-Integration: Nutzung der Google Gemini Embeddings (models/gemini-embedding-2) und LangChain-Framework.
+
+    Schnittstellen:
+
+        Outlook-Integration für Notizen-Erstellung.
+
+        Telefon-Protokoll-Anbindung (Dialer-Link via tel:-Protokoll).
+
+        WhatsApp-Web-Integration für Kontakt-Messaging.
+
+    Automatisierung (Wächter-Skript): Hintergrund-Indizierung mit Batch-Verarbeitung, Fehlerbehandlung bei API-Limits (429-Fehler) und automatischer Bereichs-Metadaten-Zuweisung.
+
+2. Inhaltlicher Softwarestand
+
+    Kontaktmanagement: Volle Unterstützung für CRM- und Whitelist-Kontakte. Die Suche erfolgt nun über eine unabhängige, intelligente Tabellen-Abfrage (Kombination aus CRM und Whitelist).
+
+    Dokumenten-Unterstützung: Indizierung von .pdf, .docx, .xlsx, .csv und .pptx (PowerPoint).
+
+    Such-Logik: Intelligente AND-Suche für präzise Ergebnisse; Scoring-System priorisiert Einträge mit verfügbaren Telefonnummern.
+
+3. Roadmap (Geplante Entwicklung)
+Phase	Ziel	Status
+Phase 1	Vollständige Remote-Kontrolle (Smartphone)	In Arbeit
+Phase 2	Automatisierte Datenextraktion (FirmaApp)	Stabilisiert
+Phase 3	Erweiterung der Whitelist-Anbindung	Umgesetzt
+Phase 4	Performance-Optimierung der Vektor-Suche	Geplant
+Download & Versionierung
+
+Die aktuellen Versionen der Dateien findest du hier. Ich habe sie gemäß deiner Anforderung zur einfacheren Nachvollziehbarkeit gelistet:
+
+    Version v3.9 (Aktueller Stand der UI): 15_wiki_web_ui.py
+
+    Version v1.1 (Aktueller Stand Wächter): 9_wiki_waechter0.py
+
+Hinweis: Zur weiteren Bearbeitung der Roadmap können wir im nächsten Schritt die Prioritäten für die "Performance-Optimierung" festlegen.
+Inhaltsverzeichnis der Versionen
+
+(Interaktives Menü für schnellen Zugriff)
+
+    v3.9 - 15_wiki_web_ui.py
+
+    v1.1 - 9_wiki_waechter0.py
+
+Welchen Punkt aus der Roadmap möchtest du als Nächstes angehen, um dein Ziel der vollständigen Steuerung von Malibu aus zu erreichen?

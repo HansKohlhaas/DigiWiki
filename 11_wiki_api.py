@@ -7,10 +7,10 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
+from config import API_HOST, API_PORT, ist_gueltiger_wissensbereich, liste_wissensbereiche
 
-# Hier importieren wir einfach deine fertige Logik aus Skript 10!
-# WICHTIG: Die Datei 10_ask_wiki.py muss im selben Ordner liegen.
-from 10_ask_wiki import frage_das_wiki 
+# Hier importieren wir einfach deine fertige Logik aus ask_wiki.py.
+from ask_wiki import frage_das_wiki 
 
 load_dotenv()
 
@@ -30,6 +30,7 @@ app.add_middleware(
 class WikiAnfrage(BaseModel):
     frage: str
     passwort: str # Ein kleiner Basisschutz für den Start
+    bereich: str | None = None
 
 # Der eigentliche Endpunkt, den das CRM aufruft
 @app.post("/ask")
@@ -42,13 +43,23 @@ async def ask_endpoint(anfrage: WikiAnfrage):
     
     try:
         # Hier rufen wir einfach deine bereits geschriebene Funktion auf
-        ergebnis = frage_das_wiki(anfrage.frage)
+        if anfrage.bereich and not ist_gueltiger_wissensbereich(anfrage.bereich):
+            raise HTTPException(status_code=400, detail=f"Unbekannter Wissensbereich. Verfuegbar: {', '.join(liste_wissensbereiche())}")
+
+        ergebnis = frage_das_wiki(anfrage.frage, bereich=anfrage.bereich)
         return ergebnis
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/areas")
+async def get_areas():
+    return {"areas": liste_wissensbereiche()}
 
 if __name__ == "__main__":
     import uvicorn
     # Startet den lokalen Server auf Port 8000
     print("🚀 Starte DigiWiki API-Server...")
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    uvicorn.run(app, host=API_HOST, port=API_PORT)

@@ -9,6 +9,7 @@ import smtplib
 import gc
 from datetime import datetime, timedelta
 from email.mime.text import MIMEText
+from langchain_community.document_loaders import UnstructuredPowerPointLoader
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -18,21 +19,34 @@ from langchain_community.document_loaders.csv_loader import CSVLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_chroma import Chroma
+from config import (
+    CHROMA_DB_PATH,
+    WATCH_BATCH_SIZE,
+    WATCH_MANIFEST_PATH,
+    WATCH_MAX_FILE_MB,
+    WATCH_QUARANTINE_PATH,
+    WATCH_RETRY_COUNT,
+    WATCH_RETRY_DELAY_SECONDS,
+    WATCH_ROOTS,
+    WATCH_SNAPSHOT_PATH,
+    WATCH_STATE_PATH,
+    WATCH_MANIFEST_VERSION,
+    WATCH_RELEVANTE_ENDUNGEN,
+    ermittle_wissensbereich,
+    ist_beobachtete_datei,
+)
 
 # --- KONFIGURATION ---
-HAUPT_ORDNER = [     
-    r"C:\Eigene Projekte",
-    r"C:\CodexProjekte\FirmenApp\Projekt",
-    r"C:\Verwaltung"
-]
+# Diese Ordner werden jede Nacht gescannt. Die Liste kommt aus config.py,
+# damit die Pfade nur an einer Stelle gepflegt werden muessen.
+BEOBACHTETE_ORDNER = [str(pfad) for pfad in WATCH_ROOTS]
+DATENBANK_ORDNER = str(CHROMA_DB_PATH)
+STATUS_DATEI = WATCH_STATE_PATH
+MANIFEST_DATEI = WATCH_MANIFEST_PATH
+QUARANTAENE_DATEI = WATCH_QUARANTINE_PATH
+SNAPSHOT_DATEI = WATCH_SNAPSHOT_PATH
+MAX_DATEI_GROESSE_MB = WATCH_MAX_FILE_MB
 
-DATENBANK_ORDNER = "./digibest_chroma_db"
-STATUS_DATEI = "./wiki_stand.json"
-QUARANTAENE_DATEI = "./wiki_quarantaene.json"
-SNAPSHOT_DATEI = "./wiki_schicht_snapshot.json"
-MAX_DATEI_GROESSE_MB = 5.0
-
-RELEVANTE_ENDUNGEN = ('.txt', '.md', '.pdf', '.docx', '.xlsx', '.csv')
 IGNORIERTE_ORDNER = {'windows', 'appdata', '$recycle.bin', 'node_modules', '.git'}
 
 # --- HILFSFUNKTIONEN ---
@@ -48,6 +62,42 @@ def lade_json(dateipfad):
 def speichere_json(dateipfad, daten):
     with open(dateipfad, 'w', encoding='utf-8') as f:
         json.dump(daten, f, indent=4)
+
+
+def lade_manifest():
+    if not os.path.exists(MANIFEST_DATEI):
+        return {}
+
+    try:
+        with open(MANIFEST_DATEI, 'r', encoding='utf-8') as f:
+            daten = json.load(f)
+    except Exception:
+        return {}
+
+    if isinstance(daten, dict):
+        return daten
+
+    return {}
+
+
+def speichere_manifest(daten):
+    with open(MANIFEST_DATEI, 'w', encoding='utf-8') as f:
+        json.dump(daten, f, indent=4)
+
+
+def manifest_ist_aktuell(daten):
+    return daten.get("__manifest_version__") == WATCH_MANIFEST_VERSION
+
+
+def markiere_manifest_version(daten):
+    daten["__manifest_version__"] = WATCH_MANIFEST_VERSION
+    return daten
+
+
+def drucke_beobachtete_ordner():
+    print("\n📂 Beobachtete Verzeichnisse:")
+    for ordner in BEOBACHTETE_ORDNER:
+        print(f"  - {ordner}")
 
 def ermittle_schicht_neu_anzahl(aktueller_gesamtstand):
     jetzt = datetime.now()
@@ -113,25 +163,88 @@ def sende_bericht(erfolgreich, fehler, geloescht, quarantaene_neu, gesamt_vorher
 def sammle_aktuelle_dateien(start_ordner_liste):
     aktuelle_dateien = {}
     for start_ordner in start_ordner_liste:
+        start_ordner = str(start_ordner)
         if not os.path.exists(start_ordner):
             continue
         for ordnerpfad, ordnernamen, dateinamen in os.walk(start_ordner):
             ordnernamen[:] = [d for d in ordnernamen if d.lower() not in IGNORIERTE_ORDNER]
             for dateiname in dateinamen:
-                if dateiname.lower().endswith(RELEVANTE_ENDUNGEN):
+                if ist_beobachtete_datei(dateiname):
                     pfad = os.path.abspath(os.path.join(ordnerpfad, dateiname))
-                    aktuelle_dateien[pfad] = os.path.getmtime(pfad)
+                    try:
+                        stat = os.stat(pfad)
+                        aktuelle_dateien[pfad] = {"mtime": stat.st_mtime, "size": stat.st_size}
+                    except FileNotFoundError:
+                        continue
     return aktuelle_dateien
+
+
+def loesche_vektor_eintrag(vektor_datenbank, pfad):
+    try:
+        vektor_datenbank.delete(where={"source": pfad})
+    except Exception:
+        try:
+            vektor_datenbank._collection.delete(where={"source": pfad})
+        except Exception:
+            pass
+
+
+def erkenne_loader(pfad):
+    if pfad.lower().endswith('.pdf'):
+        return PyPDFLoader(pfad)
+    if pfad.lower().endswith('.docx'):
+        return Docx2txtLoader(pfad)
+    if pfad.lower().endswith('.pptx'):
+        return UnstructuredPowerPointLoader(pfad)
+    if pfad.lower().endswith('.xlsx'):
+        return UnstructuredExcelLoader(pfad, mode="elements")
+    if pfad.lower().endswith('.csv'):
+        return CSVLoader(file_path=pfad, encoding="utf-8", csv_args={'delimiter': ';'})
+    return TextLoader(pfad, encoding="utf-8")
+
+
+def lade_dokumente_fuer_pfad(pfad):
+    loader = erkenne_loader(pfad)
+    try:
+        return loader.load()
+    except Exception:
+        if pfad.lower().endswith('.csv'):
+            loader = CSVLoader(file_path=pfad, encoding="cp1252", csv_args={'delimiter': ';'})
+            return loader.load()
+        raise
+
+
+def markiere_dokumente(dokumente, pfad, metadaten):
+    bereich = ermittle_wissensbereich(pfad, os.path.basename(pfad))
+    for dokument in dokumente:
+        dokument.metadata = dict(dokument.metadata or {})
+        dokument.metadata["source"] = pfad
+        dokument.metadata["mtime"] = metadaten["mtime"]
+        dokument.metadata["size"] = metadaten["size"]
+        dokument.metadata["bereich"] = bereich
+    return dokumente
 
 # --- HAUPTPROGRAMM ---
 def aktualisiere_gehirn():
     print("🕵️ Wiki-Wächter startet seinen Rundgang...")
+    drucke_beobachtete_ordner()
     
     gespeicherter_status = lade_json(STATUS_DATEI)
+    gespeicherter_manifest = lade_manifest()
+    tatsaechliche_dateien = sammle_aktuelle_dateien(WATCH_ROOTS)
+    manifest_alt = not manifest_ist_aktuell(gespeicherter_manifest)
+
+    if manifest_alt and gespeicherter_status:
+        gespeicherter_manifest = {
+            pfad: tatsaechliche_dateien.get(pfad)
+            for pfad in gespeicherter_status.keys()
+            if pfad in tatsaechliche_dateien
+        }
+        gespeicherter_manifest = {pfad: meta for pfad, meta in gespeicherter_manifest.items() if meta}
+
     gesamtstand_vorher = len(gespeicherter_status)
     
     quarantaene_liste = lade_json(QUARANTAENE_DATEI)
-    tatsaechliche_dateien = sammle_aktuelle_dateien(HAUPT_ORDNER)
     
     embeddings = GoogleGenerativeAIEmbeddings(model="models/gemini-embedding-2")
     vektor_datenbank = Chroma(persist_directory=DATENBANK_ORDNER, embedding_function=embeddings)
@@ -142,7 +255,16 @@ def aktualisiere_gehirn():
     
     geloescht = alte_pfade - aktuelle_pfade
     neu = aktuelle_pfade - alte_pfade
-    veraendert = {pfad for pfad in (alte_pfade & aktuelle_pfade) if tatsaechliche_dateien[pfad] > gespeicherter_status[pfad]}
+    veraendert = {
+        pfad
+        for pfad in (alte_pfade & aktuelle_pfade)
+        if gespeicherter_manifest.get(pfad) != tatsaechliche_dateien[pfad]
+    }
+
+    if manifest_alt:
+        neu = aktuelle_pfade
+        veraendert = set()
+        geloescht = set()
     
     zu_verarbeiten = neu.union(veraendert)
     
@@ -150,15 +272,26 @@ def aktualisiere_gehirn():
     fehler_dateien = []
     quarantaene_neu = []
 
-    if geloescht or veraendert:
+    if manifest_alt:
+        print("🔄 Manifest-Version gewechselt. Starte einmalige Neuindizierung mit Bereichsmetadaten...")
+        for pfad in aktuelle_pfade:
+            loesche_vektor_eintrag(vektor_datenbank, pfad)
+        gespeicherter_status.clear()
+        gespeicherter_manifest.clear()
+        speichere_json(STATUS_DATEI, gespeicherter_status)
+        speichere_manifest(markiere_manifest_version(gespeicherter_manifest))
+    elif geloescht or veraendert:
         for pfad in geloescht.union(veraendert):
             try:
-                vektor_datenbank._collection.delete(where={"source": pfad})
+                loesche_vektor_eintrag(vektor_datenbank, pfad)
                 if pfad in gespeicherter_status:
                     del gespeicherter_status[pfad]
+                if pfad in gespeicherter_manifest:
+                    del gespeicherter_manifest[pfad]
             except Exception:
                 pass 
         speichere_json(STATUS_DATEI, gespeicherter_status)
+        speichere_manifest(markiere_manifest_version(gespeicherter_manifest))
 
     if zu_verarbeiten:
         dateien_nach_ordner = {}
@@ -173,10 +306,18 @@ def aktualisiere_gehirn():
                 print(f"\n📂 Prüfe Verzeichnis: {ordner}")
                 
                 for pfad in dateien:
+                    loader = None
+                    dokumente = None
+                    text_stuecke = None
+
                     if pfad in quarantaene_liste:
                         continue
                     
-                    groesse_mb = os.path.getsize(pfad) / (1024 * 1024)
+                    metadaten = tatsaechliche_dateien.get(pfad)
+                    if not metadaten:
+                        continue
+
+                    groesse_mb = metadaten["size"] / (1024 * 1024)
                     if groesse_mb > MAX_DATEI_GROESSE_MB:
                         quarantaene_liste[pfad] = f"{groesse_mb:.1f} MB"
                         quarantaene_neu.append(pfad)
@@ -185,61 +326,53 @@ def aktualisiere_gehirn():
                     
                     print(f"  🔍 Lese: {os.path.basename(pfad)} ...")
                     
-                    loader = None
-                    dokumente = None
-                    text_stuecke = None
-                    
                     try:
-                        if pfad.lower().endswith('.pdf'): loader = PyPDFLoader(pfad)
-                        elif pfad.lower().endswith('.docx'): loader = Docx2txtLoader(pfad)
-                        elif pfad.lower().endswith('.xlsx'): loader = UnstructuredExcelLoader(pfad, mode="elements")
-                        elif pfad.lower().endswith('.csv'): loader = CSVLoader(file_path=pfad, encoding="utf-8", csv_args={'delimiter': ';'})
-                        else: loader = TextLoader(pfad, encoding="utf-8")
-                        
-                        try:
-                            dokumente = loader.load()
-                        except Exception:
-                            if pfad.lower().endswith('.csv'):
-                                loader = CSVLoader(file_path=pfad, encoding="cp1252", csv_args={'delimiter': ';'})
-                                dokumente = loader.load()
-                            else:
-                                raise
-
+                        dokumente = lade_dokumente_fuer_pfad(pfad)
+                        dokumente = markiere_dokumente(dokumente, pfad, metadaten)
                         text_stuecke = text_splitter.split_documents(dokumente)
                         
                         if len(text_stuecke) > 0:
-                            for i in range(0, len(text_stuecke), 100):
-                                batch = text_stuecke[i:i + 100]
+                            for i in range(0, len(text_stuecke), WATCH_BATCH_SIZE):
+                                batch = text_stuecke[i:i + WATCH_BATCH_SIZE]
                                 erfolgreich = False
                                 versuche = 0
-                                while not erfolgreich and versuche < 5:
+                                while not erfolgreich and versuche < WATCH_RETRY_COUNT:
                                     try:
                                         vektor_datenbank.add_documents(batch)
                                         erfolgreich = True
                                         time.sleep(1) 
                                     except Exception as e:
                                         if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
-                                            time.sleep(60)
+                                            time.sleep(WATCH_RETRY_DELAY_SECONDS)
                                             versuche += 1
                                         else:
                                             raise e
                                 if not erfolgreich: raise Exception("API blockiert.")
                                     
                             erfolgreich_gelernt.append(pfad)
-                            gespeicherter_status[pfad] = tatsaechliche_dateien[pfad]
+                            gespeicherter_status[pfad] = metadaten["mtime"]
+                            gespeicherter_manifest[pfad] = metadaten
+                            markiere_manifest_version(gespeicherter_manifest)
                             speichere_json(STATUS_DATEI, gespeicherter_status)
+                            speichere_manifest(gespeicherter_manifest)
                             
                         else:
-                            gespeicherter_status[pfad] = tatsaechliche_dateien[pfad]
+                            gespeicherter_status[pfad] = metadaten["mtime"]
+                            gespeicherter_manifest[pfad] = metadaten
+                            markiere_manifest_version(gespeicherter_manifest)
                             speichere_json(STATUS_DATEI, gespeicherter_status)
+                            speichere_manifest(gespeicherter_manifest)
                             
                     except Exception as e:
                         fehler_dateien.append(pfad)
                         
                     finally:
-                        if loader is not None: del loader
-                        if dokumente is not None: del dokumente
-                        if text_stuecke is not None: del text_stuecke
+                        if 'loader' in locals():
+                            del loader
+                        if 'dokumente' in locals():
+                            del dokumente
+                        if 'text_stuecke' in locals():
+                            del text_stuecke
                         gc.collect() 
 
         except KeyboardInterrupt:

@@ -1,34 +1,353 @@
 import streamlit as st
+
+# --- Initialisierung des Session-States (Sicherheits-Block) ---
+if "router_state" not in st.session_state:
+    st.session_state.router_state = None
+if "chat_historie" not in st.session_state:
+    st.session_state.chat_historie = []
+if "pending_global_cmd" not in st.session_state:
+    st.session_state.pending_global_cmd = None
+if "pending_chat_frage" not in st.session_state:
+    st.session_state.pending_chat_frage = None
+if "wa_selected_id" not in st.session_state:
+    st.session_state.wa_selected_id = None
+if "wa_suchbegriff" not in st.session_state:
+    st.session_state.wa_suchbegriff = ""
+import re
 import os
 import json
 from datetime import datetime, timedelta
 import win32com.client
 import pythoncom
-import sounddevice as sd
-import wave
-import speech_recognition as sr
+import requests
 import pyodbc
 import pandas as pd
+import warnings
+
+warnings.filterwarnings("ignore", message=".*pandas only supports SQLAlchemy.*")
 from openai import OpenAI
 from dotenv import load_dotenv
+from urllib.parse import quote
+from config import (
+    ACCESS_DB_PATH,
+    DICTIONARY_PATH,
+    MAIL_DOWNLOAD_DIR,
+    MAIL_UPLOAD_DIR,
+    SCHEMA_PATH,
+    WHATSAPP_CLOUD_API_TOKEN,
+    WHATSAPP_CLOUD_API_VERSION,
+    WHATSAPP_DEFAULT_COUNTRY_CODE,
+    WHATSAPP_PHONE_NUMBER_ID,
+)
 
 load_dotenv()
 
-# --- START: NL2SQL LOGIK (v2.9 - Mit CSV Data Dictionary) ---
-@st.cache_data
+# ==========================================
+# 1. SEITEN-KONFIGURATION (Mobile First)
+# ==========================================
+st.set_page_config(
+    page_title="DigiWiki Master-Zentrale",
+    page_icon="🤖",
+    layout="centered",
+    initial_sidebar_state="collapsed" # Sidebar standardmäßig einklappen
+)
+
+os.makedirs(MAIL_DOWNLOAD_DIR, exist_ok=True)
+os.makedirs(MAIL_UPLOAD_DIR, exist_ok=True)
+
+if hasattr(st, "dialog"):
+    modal_dialog = st.dialog
+elif hasattr(st, "experimental_dialog"):
+    modal_dialog = st.experimental_dialog
+else:
+    modal_dialog = lambda title: lambda func: func
+
+def lade_json_daten(dateipfad):
+    if os.path.exists(dateipfad):
+        try:
+            with open(dateipfad, 'r', encoding='utf-8') as f: return json.load(f)
+        except: return {}
+    return {}
+
+# ==========================================
+# 2. HILFSFUNKTIONEN & DATENBANK
+# ==========================================
+def extrahiere_url(text):
+    """Sucht nach der ersten URL im Text (z.B. Teams/Zoom-Links im Body)."""
+    if not text: return None
+    treffer = re.search(r'(https?://[^\s]+)', text)
+    return treffer.group(1) if treffer else None
+
 @st.cache_data
 def lade_textdatei(dateipfad):
     if not os.path.exists(dateipfad):
         return f"Fehler: Datei {dateipfad} nicht gefunden."
-    
-    # Versuch 1: UTF-8 (für die db_schema.txt)
     try:
         with open(dateipfad, "r", encoding="utf-8-sig") as f:
             return f.read()
-    # Versuch 2: Fallback auf Windows-1252 (für Excel-CSVs mit Umlauten)
     except UnicodeDecodeError:
         with open(dateipfad, "r", encoding="windows-1252") as f:
             return f.read()
+
+db_schema = lade_textdatei(SCHEMA_PATH)
+db_dictionary = lade_textdatei(DICTIONARY_PATH)
+
+def _sql_escape(wert):
+    return str(wert or "").replace("'", "''")
+
+
+def _baue_namensteile(such_name):
+    teile = [t.strip() for t in str(such_name).split() if len(t.strip()) > 2]
+    return teile or [str(such_name).strip()]
+
+
+def _baue_crm_where(teile):
+    return " AND ".join(
+        [
+            f"(nachname LIKE '%{_sql_escape(t)}%' OR vorname LIKE '%{_sql_escape(t)}%')"
+            for t in teile
+        ]
+    )
+
+
+def _baue_wl_where(teile):
+    if len(teile) >= 2:
+        vorname, nachname = teile[0], teile[-1]
+        return (
+            f"[Vorname] LIKE '%{_sql_escape(vorname)}%' "
+            f"AND [Nachname] LIKE '%{_sql_escape(nachname)}%'"
+        )
+    t = teile[0]
+    return f"([Vorname] LIKE '%{_sql_escape(t)}%' OR [Nachname] LIKE '%{_sql_escape(t)}%')"
+
+
+def _bereinige_telefon_df(df):
+    if df.empty:
+        return df
+    for col in ("mobil", "telefon"):
+        if col in df.columns:
+            df[col] = df[col].fillna("").astype(str).replace(["None", "nan"], "")
+    df["num_score"] = df.get("mobil", "").str.len() + df.get("telefon", "").str.len()
+    return df.sort_values("num_score", ascending=False).head(5)
+
+
+@st.cache_data(ttl=60)
+def suche_telefonnummer(such_name):
+    """Zweistufige Suche: zuerst crm_personen, sonst Whitelist-Fallback."""
+    if not such_name:
+        return pd.DataFrame()
+
+    teile = _baue_namensteile(such_name)
+    conn_str = fr'DRIVER={{Microsoft Access Driver (*.mdb, *.accdb)}};DBQ={ACCESS_DB_PATH};'
+    try:
+        conn = pyodbc.connect(conn_str, timeout=5)
+
+        query_crm = f"""
+            SELECT personid, vorname, nachname, mobil, mobiltelefon, telefon, linkedin AS linkedin_url, 'CRM' AS quelle
+            FROM crm_personen
+            WHERE {_baue_crm_where(teile)}
+        """
+        df = pd.read_sql(query_crm, conn)
+
+        if not df.empty:
+            if "mobiltelefon" in df.columns:
+                df["mobil"] = df["mobil"].fillna(df["mobiltelefon"])
+                df = df.drop(columns=["mobiltelefon"])
+            conn.close()
+            return _bereinige_telefon_df(df)
+
+        query_wl = f"""
+            SELECT
+                indpersonid,
+                Vorname,
+                Nachname,
+                Tel_Mobil,
+                Tel_Gesch,
+                Anrede,
+                Ansprache,
+                Firma_Projekt,
+                LinkedIn_URL,
+                'WL' AS quelle
+            FROM Whitelist_Kontakte
+            WHERE {_baue_wl_where(teile)}
+        """
+        df = pd.read_sql(query_wl, conn)
+        conn.close()
+
+        if df.empty:
+            return df
+
+        df = df.rename(columns={
+            "indpersonid": "personid",
+            "Vorname": "vorname",
+            "Nachname": "nachname",
+            "Tel_Mobil": "mobil",
+            "Tel_Gesch": "telefon",
+            "LinkedIn_URL": "linkedin_url",
+        })
+        return _bereinige_telefon_df(df)
+
+    except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=60)
+def suche_whatsapp_kontakte(such_name):
+    """Sucht in crm_personen und Whitelist_Kontakte nach Name (beide Tabellen, Mobilnummer nötig)."""
+    if not str(such_name or "").strip():
+        return pd.DataFrame()
+
+    teile = _baue_namensteile(such_name)
+    conn_str = fr'DRIVER={{Microsoft Access Driver (*.mdb, *.accdb)}};DBQ={ACCESS_DB_PATH};'
+    try:
+        conn = pyodbc.connect(conn_str, timeout=5)
+
+        query_crm = f"""
+            SELECT personid, vorname, nachname, mobil, mobiltelefon, telefon, 'CRM' AS quelle
+            FROM crm_personen
+            WHERE {_baue_crm_where(teile)}
+        """
+        df_crm = pd.read_sql(query_crm, conn)
+        if not df_crm.empty and "mobiltelefon" in df_crm.columns:
+            df_crm["mobil"] = df_crm["mobil"].fillna(df_crm["mobiltelefon"])
+            df_crm = df_crm.drop(columns=["mobiltelefon"])
+
+        query_wl = f"""
+            SELECT
+                indpersonid,
+                Vorname,
+                Nachname,
+                Tel_Mobil,
+                Tel_Gesch,
+                'WL' AS quelle
+            FROM Whitelist_Kontakte
+            WHERE {_baue_wl_where(teile)}
+        """
+        df_wl = pd.read_sql(query_wl, conn)
+        conn.close()
+
+        if not df_wl.empty:
+            df_wl = df_wl.rename(columns={
+                "indpersonid": "personid",
+                "Vorname": "vorname",
+                "Nachname": "nachname",
+                "Tel_Mobil": "mobil",
+                "Tel_Gesch": "telefon",
+            })
+
+        df = pd.concat([df_crm, df_wl], ignore_index=True)
+        if df.empty:
+            return df
+
+        df["personid"] = (
+            df["personid"]
+            .fillna("")
+            .astype(str)
+            .str.replace(r"\.0$", "", regex=True)
+            .replace(["nan", "None"], "")
+        )
+        for col in ("mobil", "telefon"):
+            if col in df.columns:
+                df[col] = df[col].fillna("").astype(str).replace(["None", "nan"], "")
+
+        mobil_ok = df["mobil"].str.strip() != ""
+        return df.loc[mobil_ok].drop_duplicates(subset=["mobil"]).reset_index(drop=True)
+    except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=60)
+def lade_whatsapp_kontakte():
+    if 'ACCESS_DB_PATH' not in globals() or not ACCESS_DB_PATH:
+        return pd.DataFrame()
+        
+    conn_str = fr'DRIVER={{Microsoft Access Driver (*.mdb, *.accdb)}};DBQ={ACCESS_DB_PATH};'
+    try:
+        conn = pyodbc.connect(conn_str, timeout=5)
+        
+        # 1. Alle CRM-Personen mit Mobilnummer
+        query_crm = "SELECT personid, vorname, nachname, mobil, telefon FROM crm_personen WHERE mobil IS NOT NULL OR telefon IS NOT NULL"
+        df_crm = pd.read_sql(query_crm, conn)
+        
+        # 2. Whitelist-Kontakte mit echten Namen (wie suche_telefonnummer)
+        query_wl = """
+            SELECT
+                indpersonid,
+                Vorname,
+                Nachname,
+                Tel_Mobil,
+                Tel_Gesch
+            FROM Whitelist_Kontakte
+            WHERE Tel_Mobil IS NOT NULL OR Tel_Gesch IS NOT NULL
+        """
+        df_wl = pd.read_sql(query_wl, conn)
+        if not df_wl.empty:
+            df_wl = df_wl.rename(columns={
+                "indpersonid": "personid",
+                "Vorname": "vorname",
+                "Nachname": "nachname",
+                "Tel_Mobil": "mobil",
+                "Tel_Gesch": "telefon",
+            })
+        
+        conn.close()
+        
+        # Beide Listen vereinen
+        df_gesamt = pd.concat([df_crm, df_wl], ignore_index=True)
+        df_gesamt["personid"] = (
+            df_gesamt["personid"]
+            .fillna("")
+            .astype(str)
+            .str.replace(r"\.0$", "", regex=True)
+            .replace(["nan", "None"], "")
+        )
+
+        # Dubletten basierend auf der Mobilnummer entfernen (falls jemand in beiden steht)
+        df_gesamt = df_gesamt.drop_duplicates(subset=["mobil"])
+        return df_gesamt.reset_index(drop=True)
+        
+    except Exception:
+        return pd.DataFrame()
+
+@st.cache_data(ttl=300)
+def lade_whitelist():
+    conn_str = fr'DRIVER={{Microsoft Access Driver (*.mdb, *.accdb)}};DBQ={ACCESS_DB_PATH};'
+    try:
+        conn = pyodbc.connect(conn_str, timeout=5)
+        df = pd.read_sql("SELECT * FROM Whitelist_Kontakte", conn)
+        conn.close()
+        return df
+    except Exception as e:
+        st.error(f"Datenbank-Fehler beim Laden der Whitelist: {e}")
+        return pd.DataFrame()
+
+# ==========================================
+# 3. KI LOGIK (NL2SQL & Sprach-Router)
+# ==========================================
+def analysiere_sprachkommando(kommando_text):
+    """Weist den Freitext einer der drei Aktionen (Anruf, Notiz, SQL) zu."""
+    client = OpenAI()
+    prompt = f"""
+    Analysiere den folgenden Befehl und ordne ihn in eine dieser drei Kategorien ein:
+    1. 'anruf': Der Nutzer möchte jemanden anrufen (Name extrahieren).
+    2. 'notiz': Der Nutzer möchte sich etwas notieren/merken (Inhalt extrahieren).
+    3. 'datenbank': Eine allgemeine Frage, die in der SQL-Datenbank gesucht werden soll.
+
+    Antworte AUSSCHLIESSLICH im JSON-Format:
+    {{"kategorie": "anruf" | "notiz" | "datenbank", "ziel_name": "Name der Person falls Anruf, sonst leer", "text_inhalt": "Notiztext oder Suchfrage"}}
+
+    Befehl: "{kommando_text}"
+    """
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1,
+            response_format={"type": "json_object"}
+        )
+        return json.loads(response.choices[0].message.content)
+    except Exception:
+        return {"kategorie": "datenbank", "text_inhalt": kommando_text}
 
 def uebersetze_frage_in_sql(nutzer_frage, schema_text, dictionary_csv):
     client = OpenAI()
@@ -39,28 +358,15 @@ def uebersetze_frage_in_sql(nutzer_frage, schema_text, dictionary_csv):
     === DATENBANK-SCHEMA ===
     {schema_text}
     
-    === DATA DICTIONARY (GESCHÄFTSLOGIK ALS CSV) ===
+    === DATA DICTIONARY ===
     {dictionary_csv}
     
-    === BEISPIELE ZUR ORIENTIERUNG ===
-    Frage: "Welche Industriekunden planen eine Sortimentsausweitung?"
-    SQL: SELECT * FROM stammdatenindustrie WHERE (trigger_events LIKE '%Sortimentsausweitung%' OR trigger_events LIKE '%neue Produkte%' OR trigger_events LIKE '%Portfolio%' OR trigger_events LIKE '%Expansion%')
-    
-    Frage: "In welchen Unternehmen heißt der Geschäftsführer Müller?"
-    SQL: SELECT DISTINCT stammdatenindustrie.* FROM stammdatenindustrie INNER JOIN crm_personen ON stammdatenindustrie.kundennumm = crm_personen.kundennumm WHERE crm_personen.funktionsbezeichnung LIKE '%Geschäftsführer%' AND crm_personen.nachname LIKE '%Müller%'
-
-    Frage: "Welche Hersteller haben Hustensaft im Programm?"
-    SQL: SELECT DISTINCT stammdatenindustrie.* FROM stammdatenindustrie INNER JOIN abdaartikel ON stammdatenindustrie.anbieternummer = abdaartikel.anbieter_nr WHERE (abdaartikel.artikelname LIKE '%Hustensaft%' OR abdaartikel.artikelname LIKE '%Hustensirup%' OR abdaartikel.artikelname LIKE '%Hustenlöser%' OR abdaartikel.artikelname LIKE '%Bronchial%')
-    
     === STRIKTE REGELN ===
-    1. Antworte AUSSCHLIESSLICH mit dem SQL-Code. Keine Erklärungen.
-    2. Schreibe das gesamte SQL-Statement zwingend in EINE EINZIGE ZEILE (keine Zeilenumbrüche).
-    3. Nutze für Textsuchen IMMER das Prozentzeichen '%' als Wildcard.
-    4. SEMANTISCHE TEXTSUCHE: Wenn in Textfeldern nach Konzepten gesucht wird, generiere 3-5 Synonyme und verknüpfe sie mit OR.
-    5. PERSONEN & FUNKTIONEN: Wenn nach Namen/Titeln gefragt wird, nutze zwingend 'crm_personen' und verknüpfe per INNER JOIN über 'kundennumm'.
-    6. PRODUKTSUCHE (WICHTIG): Gehe NICHT über die Warengruppe, das liefert falsche Treffer. Wenn nach einer Produktart gefragt wird, generiere stattdessen 4-5 passende Synonyme/Fachbegriffe für den Artikelnamen (z.B. Sirup, Löser, Saft) und suche mit OR in 'abdaartikel.artikelname'. Verknüpfe dann per INNER JOIN mit 'stammdatenindustrie'.
-    7. ANTI-HALLUZINATION: Erfinde keine eigenen Spalten.
-    8. Entferne jegliches Markdown (wie ```sql).
+    1. Antworte AUSSCHLIESSLICH mit dem SQL-Code in EINER Zeile.
+    2. Nutze für Textsuchen IMMER '%'.
+    3. SEMANTISCHE TEXTSUCHE: Generiere Synonyme und nutze OR.
+    4. PERSONEN: Nutze zwingend 'crm_personen' und INNER JOIN über 'kundennumm'.
+    5. Entferne Markdown.
     """
     try:
         response = client.chat.completions.create(
@@ -69,18 +375,14 @@ def uebersetze_frage_in_sql(nutzer_frage, schema_text, dictionary_csv):
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": nutzer_frage}
             ],
-            temperature=0.2 # Leicht erhöht von 0 auf 0.2, damit die KI kreativer bei den Synonymen wird
+            temperature=0.2 
         )
-        
-        # Bereinigung der KI-Ausgabe
         sql_raw = response.choices[0].message.content.strip()
-        sql_clean = sql_raw.replace("```sql", "").replace("```", "").replace("\n", " ").strip()
-        return sql_clean
-        
+        return sql_raw.replace("```sql", "").replace("```", "").replace("\n", " ").strip()
     except Exception as e:
         return f"Fehler bei der KI-Übersetzung: {e}"
 
-def fuehre_sql_aus(sql_query, db_pfad=r"C:\CodexProjekte\FirmenApp\Digibest_Master.accdb"):
+def fuehre_sql_aus(sql_query, db_pfad=ACCESS_DB_PATH):
     conn_str = f"DRIVER={{Microsoft Access Driver (*.mdb, *.accdb)}};DBQ={db_pfad};"
     try:
         conn = pyodbc.connect(conn_str)
@@ -89,42 +391,66 @@ def fuehre_sql_aus(sql_query, db_pfad=r"C:\CodexProjekte\FirmenApp\Digibest_Mast
         return df
     except Exception as e:
         return f"Fehler bei der Datenbankabfrage: {e}"
-# --- ENDE: NL2SQL LOGIK ---
 
 # ==========================================
-# 1. SEITEN-KONFIGURATION (Mobile First)
+# 4. OUTLOOK & NOTIZEN LOGIK
 # ==========================================
-
-st.set_page_config(
-    page_title="DigiWiki Master-Zentrale",
-    page_icon="🤖",
-    layout="centered",
-    initial_sidebar_state="expanded"
-)
-
-# Schema und Dictionary laden
-db_schema = lade_textdatei(r"C:\Digibest_Wiki_Projekt\db_schema.txt")
-db_dictionary = lade_textdatei(r"C:\Digibest_Wiki_Projekt\data_dictionary.csv")
-
-os.makedirs("Mail_Downloads", exist_ok=True)
-os.makedirs("Mail_Uploads", exist_ok=True)
-
-# Kompatibilität für Streamlit Dialog-Overlay sichern
-if hasattr(st, "dialog"):
-    modal_dialog = st.dialog
-elif hasattr(st, "experimental_dialog"):
-    modal_dialog = st.experimental_dialog
-else:
-    modal_dialog = lambda title: lambda func: func
-
-# ==========================================
-# 2. OUTLOOK- & AUDIO-FUNKTIONEN
-# ==========================================
-@st.cache_data(ttl=600)
-def hole_outlook_konten():
+@st.cache_resource
+def _get_outlook_application():
+    """Eine gemeinsame Outlook-COM-Sitzung pro App-Prozess (MAPI-Ressourcen schonen)."""
     pythoncom.CoInitialize()
     try:
-        outlook = win32com.client.Dispatch("Outlook.Application")
+        return win32com.client.GetActiveObject("Outlook.Application")
+    except Exception:
+        return win32com.client.Dispatch("Outlook.Application")
+
+
+def _clear_outlook_cache():
+    _get_outlook_application.clear()
+
+
+def _connect_outlook():
+    """Outlook-COM holen; bei Disconnect Cache leeren und einmal neu verbinden."""
+    last_err = None
+    for _ in range(2):
+        try:
+            app = _get_outlook_application()
+            _ = app.Session.Accounts.Count
+            return app
+        except Exception as e:
+            last_err = e
+            _clear_outlook_cache()
+    raise last_err
+
+
+def _get_outlook_namespace():
+    last_err = None
+    for _ in range(2):
+        try:
+            ns = _connect_outlook().GetNamespace("MAPI")
+            _ = ns.Stores.Count
+            return ns
+        except Exception as e:
+            last_err = e
+            _clear_outlook_cache()
+    raise last_err
+
+
+def erstelle_outlook_notiz(text_inhalt):
+    """Speichert einen Text direkt als Outlook-Notiz."""
+    try:
+        outlook = _connect_outlook()
+        note = outlook.CreateItem(5)  # 5 = olNoteItem
+        note.Body = text_inhalt
+        note.Save()
+        return True, "Notiz erfolgreich gespeichert."
+    except Exception as e:
+        return False, f"Fehler beim Speichern der Notiz: {e}"
+
+@st.cache_data(ttl=600)
+def hole_outlook_konten():
+    try:
+        outlook = _connect_outlook()
         konten = []
         for acc in outlook.Session.Accounts:
             try:
@@ -137,93 +463,180 @@ def hole_outlook_konten():
     except:
         return ["kohlhaas@digibest.eu", "hans@kohlhaas.eu"]
 
+@st.cache_data(ttl=120)
 def hole_outlook_woche():
-    pythoncom.CoInitialize()
     heute = datetime.now().date()
     in_einer_woche = heute + timedelta(days=7)
-    termine_liste, aufgaben_liste = [], []
+    termine_liste, aufgaben_liste, fehler_meldungen = [], [], []
+
     try:
-        outlook = win32com.client.Dispatch("Outlook.Application")
-        ns = outlook.GetNamespace("MAPI")
+        ns = _get_outlook_namespace()
+    except Exception as e:
+        return None, f"Outlook-Startfehler: {e}"
+
+    try:
         calendar = ns.GetDefaultFolder(9)
         appointments = calendar.Items
         appointments.IncludeRecurrences = True
         appointments.Sort("[Start]")
-        
         restric_filter = f"[Start] >= '{heute.strftime('%d.%m.%Y')} 00:00' AND [Start] <= '{in_einer_woche.strftime('%d.%m.%Y')} 23:59'"
         wochen_termine = appointments.Restrict(restric_filter)
         
         for app in wochen_termine:
-            start_lokal = app.Start
-            termine_liste.append({
-                "Datum": start_lokal.strftime("%d.%m.%Y"),
-                "Zeit": start_lokal.strftime("%H:%M"),
-                "Betreff": app.Subject,
-                "Ort": app.Location if app.Location else ""
-            })
-            
+            try:
+                termine_liste.append({
+                    "Datum": app.Start.strftime("%d.%m.%Y"),
+                    "Zeit": app.Start.strftime("%H:%M"),
+                    "Betreff": app.Subject,
+                    "Ort": app.Location if app.Location else "",
+                    "Body": app.Body if hasattr(app, 'Body') else ""
+                })
+            except: pass
+    except Exception as e:
+        fehler_meldungen.append(f"Kalender-Fehler: {e}")
+
+    try:
         tasks_folder = ns.GetDefaultFolder(13)
         for task in tasks_folder.Items:
-            if not task.Complete:
-                fälligkeit = task.DueDate.strftime("%d.%m.%Y") if task.DueDate and task.DueDate.year < 4500 else "Kein Datum"
-                aufgaben_liste.append({"Aufgabe": task.Subject, "Fällig": fälligkeit})
-    except:
-        return None, "Outlook-Verbindung eingeschränkt."
-    return {"termine": termine_liste, "aufgaben": aufgaben_liste}, None
-
-def aufnahme_von_pc_mikrofon(dauer=20):
-    fs = 16000
-    temp_datei = "temp_ui_aufnahme.wav"
-    try:
-        audio_array = sd.rec(int(dauer * fs), samplerate=fs, channels=1, dtype='int16')
-        sd.wait()
-        
-        with wave.open(temp_datei, 'wb') as wf:
-            wf.setnchannels(1)
-            wf.setsampwidth(2)
-            wf.setframerate(fs)
-            wf.writeframes(audio_array.tobytes())
-            
-        recognizer = sr.Recognizer()
-        with sr.AudioFile(temp_datei) as source:
-            audio_daten = recognizer.record(source)
-            text = recognizer.recognize_google(audio_daten, language="de-DE")
-            
-        if os.path.exists(temp_datei):
-            os.remove(temp_datei)
-        return text
+            try:
+                if not task.Complete:
+                    faelligkeit = task.DueDate.strftime("%d.%m.%Y") if (task.DueDate and task.DueDate.year < 4500) else "Kein Datum"
+                    aufgaben_liste.append({
+                        "Aufgabe": task.Subject, 
+                        "Fällig": faelligkeit,
+                        "EntryID": task.EntryID
+                    })
+            except: pass
     except Exception as e:
-        if os.path.exists(temp_datei):
-            os.remove(temp_datei)
-        return f"Fehler bei der Erkennung: {str(e)}"
+        fehler_meldungen.append(f"Aufgaben-Fehler: {e}")
+        
+    gesamt_fehler = " | ".join(fehler_meldungen) if fehler_meldungen else None
+    return {"termine": termine_liste, "aufgaben": aufgaben_liste}, gesamt_fehler
+
+def bearbeite_outlook_aufgabe(entry_id, aktion="erledigt"):
+    try:
+        ns = _get_outlook_namespace()
+        task = ns.GetItemFromID(entry_id)
+        if aktion == "erledigt":
+            task.PercentComplete = 100
+            task.Status = 2
+            task.Save()
+        elif aktion == "loeschen":
+            task.Delete()
+        hole_outlook_woche.clear()
+        return True, ""
+    except Exception as e:
+        return False, str(e)
+
+def erstelle_outlook_aufgabe(betreff, faellig_datum=None, details="", empfaenger_email=None):
+    try:
+        outlook = _connect_outlook()
+        task = outlook.CreateItem(3)
+        task.Subject = betreff
+        if details: task.Body = details
+        if faellig_datum: task.DueDate = faellig_datum.strftime("%d.%m.%Y")
+        if empfaenger_email:
+            task.Assign()
+            recipient = task.Recipients.Add(empfaenger_email)
+            recipient.Resolve()
+            task.Send()
+        else:
+            task.Save()
+        hole_outlook_woche.clear()
+        return True, ""
+    except Exception as e:
+        return False, str(e)
 
 # ==========================================
-# 3. DATENBANK- & FILTER-LOGIK
+# 5. RESTLICHE AGENTEN / WHATSAPP FUNKTIONEN
 # ==========================================
-@st.cache_data(ttl=300)
-def lade_whitelist():
-    conn_str = r'DRIVER={Microsoft Access Driver (*.mdb, *.accdb)};DBQ=C:\CodexProjekte\FirmenApp\Digibest_Master.accdb;'
+def normalisiere_linkedin_url(rohe_url):
+    if not rohe_url or str(rohe_url).lower() in ["nan", "none", ""]:
+        return ""
+    url = str(rohe_url).strip()
+    if not url:
+        return ""
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url.lstrip("/")
+    return url
+
+
+def normalisiere_whatsapp_nummer(rohe_nummer, laendercode=None):
+    rohe_nummer = str(rohe_nummer or "").strip()
+    if not rohe_nummer: return ""
+    digits = "".join(ch for ch in rohe_nummer if ch.isdigit())
+    if not digits: return ""
+    if digits.startswith("00"): digits = digits[2:]
+    if digits.startswith("0") and len(digits) > 1:
+        digits = f"{laendercode or WHATSAPP_DEFAULT_COUNTRY_CODE}{digits[1:]}"
+    return digits
+
+def baue_whatsapp_link(rohe_nummer, nachricht):
+    nummer = normalisiere_whatsapp_nummer(rohe_nummer)
+    return f"https://wa.me/{nummer}?text={quote(str(nachricht or ''))}" if nummer else None
+
+def sende_whatsapp_via_cloud_api(rohe_nummer, nachricht):
+    nummer = normalisiere_whatsapp_nummer(rohe_nummer)
+    if not nummer: return False, "Ungültige Telefonnummer."
+    url = f"https://graph.facebook.com/{WHATSAPP_CLOUD_API_VERSION}/{WHATSAPP_PHONE_NUMBER_ID}/messages"
+    payload = {"messaging_product": "whatsapp", "to": nummer, "type": "text", "text": {"preview_url": False, "body": str(nachricht or "")}}
+    headers = {"Authorization": f"Bearer {WHATSAPP_CLOUD_API_TOKEN}", "Content-Type": "application/json"}
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=30)
+        return (True, "Gesendet.") if response.ok else (False, f"Fehler: {response.text}")
+    except Exception as e: return False, str(e)
+
+def logge_aktivitaet_in_access(kanal, vorgang, kontakt_name=None, kontakt_email=None, kontakt_mobil=None, betreff=None, nachricht=None, status="ok", details=None):
+    conn_str = fr'DRIVER={{Microsoft Access Driver (*.mdb, *.accdb)}};DBQ={ACCESS_DB_PATH};'
     try:
         conn = pyodbc.connect(conn_str)
         cursor = conn.cursor()
-        cursor.execute("SELECT Email_Gesch, Vorname, Nachname, Ansprache FROM Whitelist_Kontakte WHERE Email_Gesch IS NOT NULL")
-        rows = cursor.fetchall()
-        spalten = [column[0] for column in cursor.description]
-        df = pd.DataFrame.from_records(rows, columns=spalten)
+        cursor.execute(
+            "INSERT INTO Aktivitaeten (Datum, Kanal, Vorgang, Kontakt_Name, Kontakt_Email, Kontakt_Mobil, Betreff, Nachricht, Status, Details) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            datetime.now().strftime("%d.%m.%Y %H:%M:%S"), kanal, vorgang, kontakt_name, kontakt_email, kontakt_mobil, betreff, nachricht, status, details,
+        )
+        conn.commit()
+        conn.close()
+    except: pass
+
+@st.cache_data(ttl=60)
+def lade_kontakt_aktivitaeten(kontakt_name=None, kontakt_email=None, kontakt_mobil=None, limit=5):
+    conn_str = fr'DRIVER={{Microsoft Access Driver (*.mdb, *.accdb)}};DBQ={ACCESS_DB_PATH};'
+    filter_teile = []
+    
+    if kontakt_name: 
+        name_clean = str(kontakt_name).replace("'", "''")
+        filter_teile.append(f"Kontakt_Name LIKE '%{name_clean}%'")
+        
+    if kontakt_email: 
+        email_clean = str(kontakt_email).replace("'", "''")
+        filter_teile.append(f"Kontakt_Email LIKE '%{email_clean}%'")
+        
+    if kontakt_mobil: 
+        mobil_clean = str(kontakt_mobil).replace("'", "''")
+        filter_teile.append(f"Kontakt_Mobil LIKE '%{mobil_clean}%'")
+        
+    where_clause = "WHERE " + " OR ".join(filter_teile) if filter_teile else ""
+    query = f"SELECT TOP {int(limit)} Datum, Kanal, Vorgang, Kontakt_Name, Kontakt_Email, Kontakt_Mobil, Betreff, Nachricht, Status, Details FROM Aktivitaeten {where_clause} ORDER BY ID DESC"
+    
+    try:
+        conn = pyodbc.connect(conn_str)
+        df = pd.read_sql(query, conn)
         conn.close()
         return df
-    except Exception as e:
-        st.error(f"Datenbank-Fehler: {e}")
+    except: 
         return pd.DataFrame()
 
 @st.cache_data(ttl=120)
 def hole_relevante_emails(whitelist_df):
-    if whitelist_df.empty: return []
-    pythoncom.CoInitialize()
-    outlook = win32com.client.Dispatch("Outlook.Application").GetNamespace("MAPI")
+    if whitelist_df.empty:
+        return []
+    try:
+        outlook = _get_outlook_namespace()
+    except Exception as e:
+        return {"_outlook_error": str(e)}
     ziel_konten = ['hans@kohlhaas.eu', 'kohlhaas@digibest.eu']
     relevante_mails = []
-    
     whitelist_emails = whitelist_df['Email_Gesch'].str.lower().str.strip().tolist()
 
     for store in outlook.Stores:
@@ -232,179 +645,48 @@ def hole_relevante_emails(whitelist_df):
                 inbox = store.GetDefaultFolder(6)
                 messages = inbox.Items
                 messages.Sort("[ReceivedTime]", True)
-                anzahl = len(messages)
                 
-                for i in range(1, min(200, anzahl) + 1):
+                for i in range(1, min(200, len(messages)) + 1):
                     msg = messages[i]
                     if msg.Class != 43: continue
-                    
                     sender = msg.SenderEmailAddress
-                    if msg.SenderEmailType == "EX":
-                        eu = msg.Sender.GetExchangeUser()
-                        if eu: sender = eu.PrimarySmtpAddress
+                    if msg.SenderEmailType == "EX" and msg.Sender.GetExchangeUser():
+                        sender = msg.Sender.GetExchangeUser().PrimarySmtpAddress
                     sender = sender.lower().strip()
                     
                     if sender in whitelist_emails:
                         kontakt = whitelist_df[whitelist_df['Email_Gesch'].str.lower().str.strip() == sender].iloc[0]
-                        
-                        anhaenge_lokal = []
-                        if msg.Attachments.Count > 0:
-                            for att_idx in range(1, msg.Attachments.Count + 1):
-                                try:
-                                    att = msg.Attachments[att_idx]
-                                    sicherer_name = f"{int(datetime.now().timestamp())}_{att.FileName}"
-                                    speicher_pfad = os.path.abspath(os.path.join("Mail_Downloads", sicherer_name))
-                                    att.SaveAsFile(speicher_pfad)
-                                    anhaenge_lokal.append({"name": att.FileName, "pfad": speicher_pfad})
-                                except: pass
-                        
                         relevante_mails.append({
                             "Name": f"{kontakt['Vorname']} {kontakt['Nachname']}",
                             "Ansprache": kontakt['Ansprache'],
                             "Email": sender,
                             "Betreff": msg.Subject,
                             "Inhalt": msg.Body,
-                            "Anhaenge": anhaenge_lokal
+                            "Anhaenge": [] # Gekürzt für Übersicht
                         })
             except: pass
     return relevante_mails
 
-def lade_json_daten(dateipfad):
-    if os.path.exists(dateipfad):
-        try:
-            with open(dateipfad, 'r', encoding='utf-8') as f: return json.load(f)
-        except: return {}
-    return {}
-
-status_daten = lade_json_daten("./wiki_stand.json")
-quarantaene_daten = lade_json_daten("./wiki_quarantaene.json")
-
-def ermittle_schicht_neu_anzahl(aktueller_gesamtstand):
-    snapshot_pfad = "./wiki_schicht_snapshot.json"
-    jetzt = datetime.now()
-    schwellenwert = jetzt.replace(hour=22, minute=30, second=0, microsecond=0)
-    if jetzt < schwellenwert: schwellenwert -= timedelta(days=1)
-    basis_schluessel = schwellenwert.strftime("%Y-%m-%d")
-    snapshot_daten = lade_json_daten(snapshot_pfad)
-    
-    if basis_schluessel not in snapshot_daten:
-        snapshot_daten[basis_schluessel] = aktueller_gesamtstand
-        try:
-            with open(snapshot_pfad, 'w', encoding='utf-8') as f: json.dump(snapshot_daten, f, indent=4)
-        except: pass
-            
-    basis_wert = snapshot_daten.get(basis_schluessel, aktueller_gesamtstand)
-    return max(0, aktueller_gesamtstand - basis_wert)
-
-anzahl_gelernt = len(status_daten)
-anzahl_neu_seit_2230 = ermittle_schicht_neu_anzahl(anzahl_gelernt)
-anzahl_quarantaene = len(quarantaene_daten)
-
-dateipfade = list(status_daten.keys())
-vorschlaege = [os.path.splitext(os.path.basename(p))[0] for p in dateipfade[-3:]] if len(dateipfade) >= 3 else ["Kundenübersicht", "Produktliste", "Vertragsstatus"]
-
-# ==========================================
-# 4. AGENTEN-FUNKTIONEN & BRANDVOICE
-# ==========================================
-def lade_brandvoice(aktiv=True):
-    if not aktiv:
-        return "Schreibe im ganz normalen, freundlichen, sachlichen und partnerschaftlichen Tagesgeschäft-Stil. Vermeide jegliche Marketing-Floskeln, künstliche Textstrukturen oder Verkaufsformeln."
-    return """
-    PFLICHT-BRANDVOICE: Du schreibst für DigiBest in deutscher Sprache. Ton: klar, zahlenfest, respektvoll-direkt. Keine Floskeln, keine Buzzwords.
-    Hausformel: Hook → Definition → Mechanik → Beleg/Beispiel → Konsequenz → Lösung → CTA.
-    KERNBEGRIFFE: Medienbruch, Rückfragen, Liegezeit, strukturierte/standardisierte Bestelldaten, ERP-Übergabe.
-    """
-
-def generiere_mail_entwurf(original_text, anweisung, ansprache, absender_name, brandvoice):
+def generiere_mail_entwurf(original_text, anweisung, ansprache, absender_name):
     client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-    prompt = f"Du bist Hans Kohlhaas, Geschäftsführer von DigiBest. Antworte auf: {original_text}\nPartner: {absender_name} ({ansprache})\nStil: {brandvoice}\nAnweisung: {anweisung}\nSchreibe NUR den reinen Mail-Text."
+    prompt = f"Du bist Hans Kohlhaas, Geschäftsführer von DigiBest. Antworte auf: {original_text}\nPartner: {absender_name} ({ansprache})\nTon: Klar, respektvoll-direkt.\nAnweisung: {anweisung}\nSchreibe NUR den reinen Mail-Text."
     try:
-        response = client.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": prompt}], temperature=0.4)
-        return response.choices[0].message.content
+        return client.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": prompt}], temperature=0.4).choices[0].message.content
     except Exception as e: return f"Fehler bei der KI-Generierung: {e}"
 
 def sende_email_via_outlook(empfaenger_email, betreff, inhalt, absender_konto_name, anhaenge_pfade=None):
-    pythoncom.CoInitialize()
-    outlook = win32com.client.Dispatch("Outlook.Application")
-    mail = None
-    target_account = None
-    
-    if absender_konto_name:
-        ziel_clean = absender_konto_name.lower().strip()
-        for account in outlook.Session.Accounts:
-            try:
-                if (ziel_clean == account.SmtpAddress.lower().strip()) or (ziel_clean == account.DisplayName.lower().strip()):
-                    target_account = account
-                    break
-            except: pass
-            
-    # Outlook-Native Kopplung: Direkt im passenden Entwürfe-Ordner erstellen
-    if target_account:
-        try:
-            store = target_account.DeliveryStore
-            drafts_folder = store.GetDefaultFolder(16)
-            mail = drafts_folder.Items.Add(0)
-            mail.SendUsingAccount = target_account
-        except Exception:
-            mail = outlook.CreateItem(0)
-            mail.SendUsingAccount = target_account
-    else:
-        mail = outlook.CreateItem(0)
-
+    outlook = _connect_outlook()
+    mail = outlook.CreateItem(0)
     mail.To = empfaenger_email
     mail.Subject = "AW: " + betreff
     mail.Body = inhalt
-                
-    if anhaenge_pfade:
-        for pfad in anhaenge_pfade:
-            if os.path.exists(pfad):
-                try: mail.Attachments.Add(pfad)
-                except Exception as e: st.error(f"Konnte Anhang nicht anfügen: {e}")
     try:
         mail.Send()
+        hole_relevante_emails.clear()
         return True
     except Exception as e:
         st.error(f"Kritischer Outlook-Sendefehler: {e}")
         return False
-
-def logge_aktivitaet_in_access(email, aktion, betreff):
-    conn_str = r'DRIVER={Microsoft Access Driver (*.mdb, *.accdb)};DBQ=C:\CodexProjekte\FirmenApp\Digibest_Master.accdb;'
-    try:
-        conn = pyodbc.connect(conn_str)
-        cursor = conn.cursor()
-        try: cursor.execute("SELECT TOP 1 * FROM Aktivitaeten")
-        except:
-            cursor.execute("CREATE TABLE Aktivitaeten (ID COUNTER PRIMARY KEY, Datum VARCHAR(50), Kontakt_Email VARCHAR(100), Aktion VARCHAR(100), Betreff VARCHAR(255))")
-            conn.commit()
-        cursor.execute("INSERT INTO Aktivitaeten (Datum, Kontakt_Email, Aktion, Betreff) VALUES (?, ?, ?, ?)", datetime.now().strftime("%d.%m.%Y %H:%M:%S"), email, aktion, betreff)
-        conn.commit()
-        conn.close()
-    except Exception: pass
-
-# ==========================================
-# 5. DIALOG FÜR MOBILE ANHÄNGE
-# ==========================================
-@modal_dialog("📎 Anhänge hinzufügen")
-def upload_overlay(mail_id):
-    st.write("Wähle Bilder oder Dokumente von deinem Gerät aus:")
-    hochgeladene_dateien = st.file_uploader("Dateien auswählen", accept_multiple_files=True, key=f"overlay_upload_{mail_id}")
-    
-    if st.button("Hochladen bestätigen", key=f"btn_confirm_upload_{mail_id}"):
-        if hochgeladene_dateien:
-            if f"staged_files_{mail_id}" not in st.session_state:
-                st.session_state[f"staged_files_{mail_id}"] = []
-                
-            for idx, f in enumerate(hochgeladene_dateien):
-                file_bytes = f.getvalue()
-                file_size = len(file_bytes)
-                sicherer_dateiname = f"{int(datetime.now().timestamp())}_{idx}_{file_size}_{f.name}"
-                ziel_pfad = os.path.abspath(os.path.join("Mail_Uploads", sicherer_dateiname))
-                
-                if not any(str(file_size) in p for p in st.session_state[f"staged_files_{mail_id}"]):
-                    with open(ziel_pfad, "wb") as out_f: 
-                        out_f.write(file_bytes)
-                    st.session_state[f"staged_files_{mail_id}"].append(ziel_pfad)
-        st.rerun()
 
 # ==========================================
 # 6. FUSIONIERTES CSS
@@ -412,105 +694,270 @@ def upload_overlay(mail_id):
 st.markdown("""
     <style>
     .stApp { background-color: #f8fafc; }
-    .sidebar-header { color: #0062cc; font-weight: bold; font-size: 18px; margin-bottom: 15px; }
-    div.stButton > button { width: 100%; background-color: #ffffff; border: 1px solid #cbd5e1; color: #0f172a; border-radius: 6px; }
-    div.stButton > button:hover { border-color: #0062cc; color: #0062cc; }
+    .main .block-container { overflow-anchor: none; }
+    div[data-testid="stForm"] { margin-bottom: 0.25rem; }
+    .router-result-panel { min-height: 0; overflow-anchor: none; }
     .outlook-card { background-color: #ffffff; padding: 14px; border-radius: 6px; border: 1px solid #e2e8f0; margin-bottom: 10px; font-size: 14px; }
-    .file-staged { background-color: #cbd5e1; padding: 6px 12px; border-radius: 4px; margin-bottom: 4px; font-size: 13px; color: #1e293b; display: inline-block; margin-right: 5px; }
+    .action-btn { background-color: #0062cc; color: white !important; font-weight: bold; padding: 15px; border-radius: 8px; text-align: center; text-decoration: none; display: block; margin-bottom: 10px; }
+    .action-btn:hover { background-color: #004ba0; }
     </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 7. SIDEBAR & HEADER
+# 7. HEADER & GLOBALES KOMMANDO-FELD
 # ==========================================
-with st.sidebar:
-    st.markdown("<div class='sidebar-header'>📊 System-Status</div>", unsafe_allow_html=True)
-    st.metric(label="Verarbeitete Dokumente (Gesamt)", value=f"{anzahl_gelernt} Stück")
-    st.metric(label="✨ Neu seit gestern 22:30 h", value=f"{anzahl_neu_seit_2230} Stück", delta=f"+{anzahl_neu_seit_2230}" if anzahl_neu_seit_2230 > 0 else None)
-    st.metric(label="In Quarantäne", value=f"{anzahl_quarantaene} Stück")
-    st.markdown("---")
-    if st.button("🔄 Chat-Verlauf zurücksetzen"):
+col_logo, col_title = st.columns([1, 8])
+with col_logo:
+    if os.path.exists("LogoDigiBestrundCMYK.jpg"): st.image("LogoDigiBestrundCMYK.jpg", width=60)
+with col_title:
+    st.markdown("#### DigiWiki Zentrale")
+
+with st.expander("📊 System-Status & Dashboard"):
+    status_daten = lade_json_daten("./wiki_stand.json")
+    st.metric(label="Verarbeitete Dokumente", value=f"{len(status_daten)} Stück")
+    if st.button("🔄 Chat-Verlauf leeren", use_container_width=True):
         st.session_state.chat_historie = []
         st.rerun()
 
-col_logo, col_title = st.columns([1, 8])
-with col_logo:
-    if os.path.exists("LogoDigiBestrundCMYK.jpg"): st.image("LogoDigiBestrundCMYK.jpg", width=80)
-with col_title:
-    st.title("DigiWiki Zentrale")
-    st.caption(f"Master-Cockpit | Stand: {datetime.now().strftime('%d.%m.%Y')}")
-
 st.markdown("---")
+
+# DER KI-SPRACHROUTER (Entkoppelt: Eingabe -> Editieren -> Ausführen)
+with st.form("form_global_cmd", clear_on_submit=True):
+    global_cmd = st.text_input(
+        "🎙️ Kommando (Diktieren, ggf. korrigieren, dann starten):",
+        placeholder="z.B. Rufe Marc Gebur an... oder: Notiere für das Meeting...",
+        key="global_cmd_input",
+    )
+    btn_execute = st.form_submit_button("🚀 Ausführen", use_container_width=True)
+
+if btn_execute and global_cmd and global_cmd.strip():
+    st.session_state.pending_global_cmd = global_cmd.strip()
+    st.rerun()
+
+if st.session_state.pending_global_cmd:
+    cmd_text = st.session_state.pending_global_cmd
+    st.session_state.pending_global_cmd = None
+    with st.spinner("Analysiere Kommando..."):
+        analyse = analysiere_sprachkommando(cmd_text)
+        kategorie = analyse.get("kategorie", "datenbank")
+
+        if kategorie == "anruf":
+            such_name = analyse.get("ziel_name", "")
+            st.session_state.router_state = {
+                "kategorie": "anruf",
+                "such_name": such_name,
+                "df_tel": suche_telefonnummer(such_name),
+            }
+        elif kategorie == "notiz":
+            notiz_text = analyse.get("text_inhalt", "")
+            erfolg, msg = erstelle_outlook_notiz(notiz_text)
+            st.session_state.router_state = {
+                "kategorie": "notiz",
+                "notiz_erfolg": erfolg,
+                "notiz_msg": msg,
+                "notiz_text": notiz_text,
+            }
+        else:
+            st.session_state.pending_chat_frage = analyse.get("text_inhalt", cmd_text)
+            st.session_state.router_state = None
+
+router_panel = st.container()
+with router_panel:
+    if st.session_state.router_state:
+        state = st.session_state.router_state
+
+        if state.get("kategorie") == "anruf":
+            such_name = state["such_name"]
+            df_tel = state["df_tel"]
+            if not df_tel.empty:
+                def clean_for_dialer(num):
+                    if not num or str(num).lower() in ["nan", "none"]: return ""
+                    return "".join(c for c in str(num) if c.isdigit() or c == '+')
+
+                found_count = 0
+                for _, row in df_tel.iterrows():
+                    name = f"{row.get('vorname', '')} {row.get('nachname', '')}".strip()
+                    quelle = row.get("quelle", "")
+                    personid = row.get("personid", "")
+                    if personid:
+                        st.caption(f"personid: {personid} ({quelle})")
+                    if quelle == "WL":
+                        meta = []
+                        if row.get("Anrede"): meta.append(str(row.get("Anrede")))
+                        if row.get("Ansprache"): meta.append(str(row.get("Ansprache")))
+                        if row.get("Firma_Projekt"): meta.append(str(row.get("Firma_Projekt")))
+                        if meta:
+                            st.caption(" · ".join(meta))
+                    final_mobil = clean_for_dialer(row.get("mobil") or row.get("wl_mobil") or row.get("handy"))
+                    fest = clean_for_dialer(row.get("telefon"))
+
+                    if final_mobil:
+                        st.markdown(f"<a class='action-btn' style='background-color:#16a34a;' href='tel:{final_mobil}'>📞 {name} (Mobil)</a>", unsafe_allow_html=True)
+                        found_count += 1
+                    if fest:
+                        st.markdown(f"<a class='action-btn' style='background-color:#15803d;' href='tel:{fest}'>☎️ {name} (Festnetz)</a>", unsafe_allow_html=True)
+                        found_count += 1
+                    linkedin_url = normalisiere_linkedin_url(row.get("linkedin_url") or row.get("LinkedIn_URL"))
+                    if linkedin_url:
+                        st.markdown(
+                            f"<a class='action-btn' style='background-color:#0a66c2;' href='{linkedin_url}' target='_blank'>🔗 LinkedIn-Profil</a>",
+                            unsafe_allow_html=True,
+                        )
+                if found_count == 0:
+                    st.error(f"⚠️ {such_name} hat keine hinterlegten Telefonnummern.")
+            else:
+                st.error(f"Konnte keinen Kontakt für '{such_name}' finden.")
+
+        elif state.get("kategorie") == "notiz":
+            if state.get("notiz_erfolg"):
+                st.success(f"✅ {state.get('notiz_msg')}: {state.get('notiz_text')}")
+            else:
+                st.error(state.get("notiz_msg"))
 
 # ==========================================
 # 8. HAUPTBEREICH (Tabs)
 # ==========================================
 if "chat_historie" not in st.session_state: st.session_state.chat_historie = []
 
-tab_chat, tab_agenda, tab_mails = st.tabs(["💬 Wiki-Chat & Werkzeuge", "📅 Outlook Agenda", "📬 Mails & KI-Agent"])
+_haupttab_labels = {
+    "chat": "💬 Wiki & Daten",
+    "mails": "📬 Mails & Kontakte",
+    "agenda": "📅 Agenda & Notizen",
+}
+haupttab = st.radio(
+    "Bereich",
+    options=list(_haupttab_labels.keys()),
+    format_func=lambda key: _haupttab_labels[key],
+    horizontal=True,
+    label_visibility="collapsed",
+    key="haupttab",
+)
 
-# --- REITER 1: CHAT & WERKZEUGE ---
-with tab_chat:
-    st.markdown("### ⚡ Schnellabfragen & Werkzeuge")
-    col1, col2, col3, col_mic = st.columns([2, 2, 2, 2])
-    vorauswahl_frage = None
-
-    with col1:
-        if st.button(f"🔍 {vorschlaege[0]}", key="btn_q1"): vorauswahl_frage = f"Gib mir Details zu {vorschlaege[0]}."
-    with col2:
-        if st.button(f"🔍 {vorschlaege[1]}", key="btn_q2"): vorauswahl_frage = f"Gib mir Details zu {vorschlaege[1]}."
-    with col3:
-        if st.button(f"🔍 {vorschlaege[2]}", key="btn_q3"): vorauswahl_frage = f"Gib mir Details zu {vorschlaege[2]}."
-        
-    with col_mic:
-        if st.button("🎤 Spracheingabe (PC-Mic)", key="btn_chat_mic"):
-            with st.spinner("🎙️ Ich höre zu... (20 Sek. Aufnahme läuft)"):
-                gesprochener_text = aufnahme_von_pc_mikrofon(dauer=20)
-                if gesprochener_text and not gesprochener_text.startswith("Fehler"): vorauswahl_frage = gesprochener_text
-                else: st.error(gesprochener_text)
-
+# --- REITER 1: CHAT ---
+if haupttab == "chat":
     for r in st.session_state.chat_historie:
         with st.chat_message(r["rolle"]): st.markdown(r["text"])
 
-    eingabe_frage = st.chat_input("Stelle eine Frage an die Datenbank...")
-    frage = eingabe_frage if eingabe_frage else vorauswahl_frage
+    eingabe_frage = st.chat_input("Frage an die Datenbank...")
+    frage = eingabe_frage
+    if not frage and st.session_state.pending_chat_frage:
+        frage = st.session_state.pending_chat_frage
+        st.session_state.pending_chat_frage = None
 
     if frage:
         with st.chat_message("user"): st.markdown(frage)
         st.session_state.chat_historie.append({"rolle": "user", "text": frage})
 
         with st.chat_message("assistant"):
-            with st.spinner("Übersetze Frage & durchsuche Datenbank..."):
+            with st.spinner("Durchsuche Datenbank..."):
                 try:
-                    # 1. KI übersetzt Text in SQL
                     generiertes_sql = uebersetze_frage_in_sql(frage, db_schema, db_dictionary)
-                    
-                    # Diagnose: Zeigt das SQL einklappbar an
-                    with st.expander("Generiertes SQL-Statement anzeigen"):
-                        st.code(generiertes_sql, language="sql")
-                    
-                    # 2. Access führt SQL aus
                     ergebnis = fuehre_sql_aus(generiertes_sql)
                     
-                    # 3. Ergebnis anzeigen
                     if isinstance(ergebnis, pd.DataFrame):
                         if ergebnis.empty:
-                            antwort = "Die Datenbank hat für diese Anfrage keine Treffer gefunden."
-                            st.info(antwort)
-                            st.session_state.chat_historie.append({"rolle": "assistant", "text": antwort})
+                            st.info("Keine Treffer gefunden.")
+                            st.session_state.chat_historie.append({"rolle": "assistant", "text": "Keine Treffer."})
                         else:
                             st.success(f"{len(ergebnis)} Datensätze gefunden:")
-                            st.dataframe(ergebnis)
+                            st.dataframe(ergebnis, use_container_width=True)
                             st.session_state.chat_historie.append({"rolle": "assistant", "text": f"Tabelle mit {len(ergebnis)} Zeilen generiert."})
                     else:
                         st.error(ergebnis)
-                        st.session_state.chat_historie.append({"rolle": "assistant", "text": f"Fehler: {ergebnis}"})
                 except Exception as e: 
-                    st.error(f"❌ **Fehler:** {str(e)}")
+                    st.error(f"❌ Fehler: {str(e)}")
 
-# --- REITER 2: OUTLOOK AGENDA ---
-with tab_agenda:
-    st.markdown("### 📅 Meine Termine & Agenda")
+# --- REITER 2: MAILS & WHATSAPP ---
+elif haupttab == "mails":
+    with st.expander("📱 Manuelle WhatsApp senden"):
+        with st.form("form_wa_suche", clear_on_submit=False):
+            wa_eingabe = st.text_input(
+                "🔍 Kontakt suchen...",
+                value=st.session_state.wa_suchbegriff,
+                placeholder="Vor- oder Nachname…",
+            )
+            btn_wa_suchen = st.form_submit_button("🔍 Suchen", use_container_width=True)
+
+        if btn_wa_suchen:
+            st.session_state.wa_suchbegriff = wa_eingabe.strip()
+            st.session_state.wa_selected_id = None
+
+        suchbegriff = st.session_state.wa_suchbegriff
+        df_anzeige = suche_whatsapp_kontakte(suchbegriff) if suchbegriff else pd.DataFrame()
+
+        if not suchbegriff:
+            st.caption("Name eingeben und Suchen klicken.")
+        elif df_anzeige.empty:
+            st.info("Keine Treffer gefunden.")
+        else:
+            wa_kontakt_liste = st.container()
+            with wa_kontakt_liste:
+                for _, row in df_anzeige.iterrows():
+                    name = f"{row['vorname']} {row['nachname']}".strip()
+                    personid = str(row.get("personid", "") or "").strip()
+                    if not personid:
+                        personid = f"m_{normalisiere_whatsapp_nummer(row['mobil'])}"
+                    if st.button(f"💬 {name}", key=f"btn_wa_{personid}"):
+                        st.session_state.wa_selected_id = personid
+                        st.rerun()
+
+        if st.session_state.wa_selected_id and not df_anzeige.empty:
+            sel = df_anzeige[
+                df_anzeige["personid"].astype(str) == st.session_state.wa_selected_id
+            ]
+            if sel.empty and st.session_state.wa_selected_id.startswith("m_"):
+                nummer = st.session_state.wa_selected_id[2:]
+                sel = df_anzeige[
+                    df_anzeige["mobil"].apply(normalisiere_whatsapp_nummer) == nummer
+                ]
+            if not sel.empty:
+                row = sel.iloc[0]
+                name = f"{row['vorname']} {row['nachname']}".strip()
+                wa_link = baue_whatsapp_link(row["mobil"], "")
+                if wa_link:
+                    st.markdown(f"**An {name} senden:**")
+                    st.markdown(
+                        f"<a class='action-btn' href='{wa_link}' target='_blank'>Jetzt WhatsApp öffnen</a>",
+                        unsafe_allow_html=True,
+                    )
+                if st.button("✖ Schließen", key="btn_wa_close"):
+                    st.session_state.wa_selected_id = None
+                    st.rerun()
+
+    st.markdown("#### 📬 Posteingang (Whitelist)")
+    whitelist_df = lade_whitelist()
+    if whitelist_df.empty:
+        st.info("Die Whitelist ist leer oder die Datenbank ist nicht erreichbar.")
+    else:
+        mails = hole_relevante_emails(whitelist_df)
+        if isinstance(mails, dict) and mails.get("_outlook_error"):
+            hole_relevante_emails.clear()
+            st.warning(
+                f"Outlook nicht erreichbar: {mails['_outlook_error']}. "
+                "Bitte Outlook neu starten und diese Seite neu laden."
+            )
+        elif not mails:
+            st.info("Keine Mails von freigegebenen Kontakten gefunden.")
+        else:
+            for i, mail in enumerate(mails):
+                with st.expander(f"📧 {mail['Name']} | {mail['Betreff']}"):
+                    st.text_area("Original-Mail", mail['Inhalt'], height=150, key=f"mail_text_{i}")
+                    anweisung = st.text_input("KI-Anweisung (diktieren!):", key=f"anweisung_{i}")
+                    if st.button("✨ Entwurf generieren", key=f"btn_gen_{i}"):
+                        st.session_state[f"edit_{i}"] = generiere_mail_entwurf(
+                            mail["Inhalt"], anweisung, mail["Ansprache"], mail["Name"]
+                        )
+                        st.rerun()
+                    if f"edit_{i}" in st.session_state:
+                        editierter_text = st.text_area("Entwurf:", height=200, key=f"edit_{i}")
+                        if st.button("🚀 Senden", key=f"send_{i}"):
+                            if sende_email_via_outlook(mail['Email'], mail['Betreff'], editierter_text, "kohlhaas@digibest.eu"):
+                                st.success("Versandt!")
+                                del st.session_state[f"edit_{i}"]
+                                st.rerun()
+
+# --- REITER 3: AGENDA & NOTIZEN ---
+elif haupttab == "agenda":
     col_cal, col_task = st.columns(2)
     outlook_daten, fehler = hole_outlook_woche()
 
@@ -520,87 +967,37 @@ with tab_agenda:
         elif outlook_daten and outlook_daten["termine"]:
             for t in outlook_daten["termine"]:
                 ort_text = f" – 📍 {t['Ort']}" if t['Ort'] else ""
-                st.markdown(f"<div class='outlook-card'><b>📅 {t['Datum']} | {t['Zeit']} Uhr</b> | {t['Betreff']}{ort_text}</div>", unsafe_allow_html=True)
-        else: st.write("-")
+                url = extrahiere_url(t.get('Body', ''))
+                if url:
+                    st.markdown(f"<div class='outlook-card'><b>📅 {t['Datum']} | {t['Zeit']} Uhr</b><br><a href='{url}' target='_blank'>🔗 {t['Betreff']}</a>{ort_text}</div>", unsafe_allow_html=True)
+                else:
+                    st.markdown(f"<div class='outlook-card'><b>📅 {t['Datum']} | {t['Zeit']} Uhr</b><br>{t['Betreff']}{ort_text}</div>", unsafe_allow_html=True)
 
     with col_task:
-        st.markdown("#### 🎯 Offene Aufgaben")
-        if fehler: st.write("-")
-        elif outlook_daten and outlook_daten["aufgaben"]:
+        st.markdown("#### 🎯 Aufgaben & Notizen")
+        with st.expander("📝 Neue Notiz (manuell)"):
+            with st.form("form_notiz", clear_on_submit=True):
+                manuelle_notiz = st.text_area("Notiz diktieren:")
+                if st.form_submit_button("In Outlook speichern", use_container_width=True):
+                    erfolg, msg = erstelle_outlook_notiz(manuelle_notiz)
+                    if erfolg: st.success(msg)
+                    
+        with st.expander("➕ Neue Aufgabe"):
+            with st.form("form_aufgabe", clear_on_submit=True):
+                neu_betreff = st.text_input("Was ist zu tun?*")
+                neu_faellig = st.date_input("Fällig am", value=None)
+                if st.form_submit_button("Aufgabe anlegen", use_container_width=True):
+                    erstelle_outlook_aufgabe(neu_betreff, neu_faellig)
+                    st.rerun()
+
+        if outlook_daten and outlook_daten["aufgaben"]:
             for a in outlook_daten["aufgaben"]:
-                st.markdown(f"<div class='outlook-card'>📌 {a['Aufgabe']} <br><small style='color:#ef4444;'>Fällig: {a['Fällig']}</small></div>", unsafe_allow_html=True)
-        else: st.write("-")
-
-# --- REITER 3: RELEVANTE MAILS ---
-with tab_mails:
-    st.markdown("### 📬 Posteingang & KI-Agent")
-    outlook_konten = hole_outlook_konten()
-    whitelist_df = lade_whitelist()
-    
-    if whitelist_df.empty:
-        st.info("Die Whitelist ist leer oder die Datenbank aktuell gesperrt.")
-    else:
-        mails = hole_relevante_emails(whitelist_df)
-        
-        if not mails:
-            st.info("Keine Mails von freigegebenen Kontakten gefunden.")
-        else:
-            for i, mail in enumerate(mails):
-                with st.expander(f"📧 {mail['Name']} | {mail['Betreff']}"):
-                    if mail['Anhaenge']:
-                        st.markdown("**📎 Empfangene Anhänge:**")
-                        for att in mail['Anhaenge']: st.write(f"- `{att['name']}`")
-                    
-                    st.text_area("Original-Mail", mail['Inhalt'], height=150, key=f"mail_text_{i}")
-                    
-                    col_empf, col_abs = st.columns(2)
-                    with col_empf:
-                        editierter_empfaenger = st.text_input("Senden an:", value=mail['Email'], key=f"edit_to_{i}")
-                    with col_abs:
-                        default_idx = 0
-                        if "kohlhaas@digibest.eu" in outlook_konten: default_idx = outlook_konten.index("kohlhaas@digibest.eu")
-                        gewaehltes_konto = st.selectbox("Senden von:", outlook_konten, index=default_idx, key=f"edit_from_{i}")
-
-                    bv_aktiv = st.checkbox("DigiBest Brandvoice anwenden", value=False, key=f"bv_toggle_{i}")
-                    aktuelle_brandvoice = lade_brandvoice(bv_aktiv)
-
-                    anweisung = st.text_input("Anweisung für die KI (Tipp: Smartphone-Diktat nutzen!):", placeholder="z.B. Bitte kurz absagen...", key=f"anweisung_field_{i}")
-                    
-                    if st.button("✨ KI Entwurf generieren", key=f"btn_generate_{i}"):
-                        with st.spinner("Erstelle Entwurf..."):
-                            entwurf = generiere_mail_entwurf(mail['Inhalt'], anweisung, mail['Ansprache'], mail['Name'], aktuelle_brandvoice)
-                            st.session_state[f"draft_{i}"] = entwurf
-                            st.rerun()
-
-                    if f"draft_{i}" in st.session_state:
-                        editierter_text = st.text_area("Entwurf (editierbar):", value=st.session_state[f"draft_{i}"], height=200, key=f"form_edit_draft_{i}")
-                        
-                        st.markdown("<br>", unsafe_allow_html=True)
-                        
-                        # Ausgelagerter Upload-Dialog Aufruf
-                        if st.button("📎 Anhänge hinzufügen", key=f"btn_open_dialog_{i}"):
-                            upload_overlay(i)
-
-                        staged_files = st.session_state.get(f"staged_files_{i}", [])
-                        if staged_files:
-                            st.markdown("<div style='margin-bottom:10px;'><b>Bereit zum Mitsenden:</b></div>", unsafe_allow_html=True)
-                            for f_pfad in staged_files:
-                                anzeige_name = "_".join(os.path.basename(f_pfad).split("_")[3:])
-                                st.markdown(f"<span class='file-staged'>✔️ {anzeige_name}</span>", unsafe_allow_html=True)
-                            
-                            if st.button("🗑️ Anhänge leeren", key=f"clear_files_{i}"):
-                                st.session_state[f"staged_files_{i}"] = []
-                                st.rerun()
-                                
-                            st.markdown("<br>", unsafe_allow_html=True)
-
-                        if st.button("🚀 Jetzt senden & in Access protokollieren", key=f"send_final_{i}"):
-                            with st.spinner("Versand läuft..."):
-                                if sende_email_via_outlook(editierter_empfaenger, mail['Betreff'], editierter_text, gewaehltes_konto, staged_files):
-                                    logge_aktivitaet_in_access(editierter_empfaenger, f"E-Mail gesendet (KI) von {gewaehltes_konto}", mail['Betreff'])
-                                    st.success("Mail erfolgreich versandt!")
-                                    
-                                    if f"staged_files_{i}" in st.session_state: del st.session_state[f"staged_files_{i}"]
-                                    del st.session_state[f"draft_{i}"]
-                                    st.cache_data.clear()
-                                    st.rerun()
+                with st.container():
+                    st.markdown(f"<div class='outlook-card'>📌 <b>{a['Aufgabe']}</b><br><small color='red'>Fällig: {a['Fällig']}</small></div>", unsafe_allow_html=True)
+                    c1, c2 = st.columns(2)
+                    if c1.button("✔️ Erledigt", key=f"done_{a['EntryID']}"):
+                        bearbeite_outlook_aufgabe(a['EntryID'], "erledigt")
+                        st.rerun()
+                    if c2.button("🗑️ Löschen", key=f"del_{a['EntryID']}"):
+                        bearbeite_outlook_aufgabe(a['EntryID'], "loeschen")
+                        st.rerun()

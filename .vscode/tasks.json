@@ -1,0 +1,29 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Start DigiWiki",
+			"type": "shell",
+			"command": "cmd",
+			"args": [
+				"/c",
+				"start.bat"
+			],
+			"isBackground": true,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "Run Wiki Wächter",
+			"type": "shell",
+			"command": "cmd",
+			"args": [
+				"/c",
+				".\\.venv\\Scripts\\python.exe",
+				"9_wiki_waechter.py"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		}
+	]
+}

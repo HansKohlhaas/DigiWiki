@@ -1,0 +1,21 @@
+[server]
+address = "0.0.0.0"
+port = 8501
+headless = true
+runOnSave = true
+fileWatcherType = "poll"
+enableCORS = false
+enableXsrfProtection = false
+# WebSocket ohne Kompression – stabiler ueber Tailscale/Mobilfunk
+enableWebsocketCompression = false
+# WebSocket-Keepalive (Tailscale/Mobil: Hintergrund-Tabs, NAT-Timeouts)
+# Tornado >=6.5: nicht unter 30 s setzen
+websocketPingInterval = 30
+# Session nach WebSocket-Trennung behalten (Re-Connect vom Handy nach Leerlauf)
+disconnectedSessionTTL = 3600
+
+[browser]
+# Wird von start.bat mit der live ermittelten Tailscale-IP ueberschrieben
+serverAddress = "localhost"
+serverPort = 8501
+gatherUsageStats = false
