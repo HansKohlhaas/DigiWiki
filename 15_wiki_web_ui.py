@@ -13,6 +13,12 @@ if "wa_selected_id" not in st.session_state:
     st.session_state.wa_selected_id = None
 if "wa_suchbegriff" not in st.session_state:
     st.session_state.wa_suchbegriff = ""
+if "ne_mail_suchbegriff" not in st.session_state:
+    st.session_state.ne_mail_suchbegriff = ""
+if "ne_mail_kontakt_key" not in st.session_state:
+    st.session_state.ne_mail_kontakt_key = None
+if "ne_mail_entwurf" not in st.session_state:
+    st.session_state.ne_mail_entwurf = ""
 import re
 import os
 import json
@@ -96,29 +102,70 @@ def _sql_escape(wert):
     return str(wert or "").replace("'", "''")
 
 
-def _baue_namensteile(such_name):
-    teile = [t.strip() for t in str(such_name).split() if len(t.strip()) > 2]
-    return teile or [str(such_name).strip()]
+def _baue_suchteile(suchtext):
+    """Zerlegt Suchtext in Tokens (Vorname, Nachname, Firma, …)."""
+    raw = str(suchtext or "").strip()
+    if not raw:
+        return []
+    return [t.strip() for t in raw.split() if t.strip()]
+
+
+def _baue_namen_filter(teile, vorname_feld, nachname_feld):
+    if not teile:
+        return "1=0"
+    if len(teile) >= 2:
+        vorname, nachname = _sql_escape(teile[0]), _sql_escape(teile[-1])
+        return (
+            f"({vorname_feld} LIKE '%{vorname}%' AND {nachname_feld} LIKE '%{nachname}%')"
+        )
+    t = _sql_escape(teile[0])
+    return f"({vorname_feld} LIKE '%{t}%' OR {nachname_feld} LIKE '%{t}%')"
+
+
+def _baue_firma_filter(teile, stamm_alias="s"):
+    if not teile:
+        return "1=0"
+    teile_filter = []
+    for t in teile:
+        e = _sql_escape(t)
+        teile_filter.append(f"{stamm_alias}.nama LIKE '%{e}%'")
+    return "(" + " OR ".join(teile_filter) + ")"
+
+
+def _baue_kontakt_suchfilter(teile, vorname_feld, nachname_feld, stamm_alias="s"):
+    """Name (Vor-/Nachname) oder Firma über stammdatenindustrie.nama."""
+    name = _baue_namen_filter(teile, vorname_feld, nachname_feld)
+    firma = _baue_firma_filter(teile, stamm_alias=stamm_alias)
+    return f"(({name}) OR ({firma}))"
 
 
 def _baue_crm_where(teile):
-    return " AND ".join(
-        [
-            f"(nachname LIKE '%{_sql_escape(t)}%' OR vorname LIKE '%{_sql_escape(t)}%')"
-            for t in teile
-        ]
-    )
+    return _baue_kontakt_suchfilter(teile, "p.vorname", "p.nachname", stamm_alias="s")
 
 
 def _baue_wl_where(teile):
-    if len(teile) >= 2:
-        vorname, nachname = teile[0], teile[-1]
-        return (
-            f"[Vorname] LIKE '%{_sql_escape(vorname)}%' "
-            f"AND [Nachname] LIKE '%{_sql_escape(nachname)}%'"
-        )
-    t = teile[0]
-    return f"([Vorname] LIKE '%{_sql_escape(t)}%' OR [Nachname] LIKE '%{_sql_escape(t)}%')"
+    return _baue_kontakt_suchfilter(teile, "w.[Vorname]", "w.[Nachname]", stamm_alias="s")
+
+
+def _crm_from_join():
+    return """
+        FROM crm_personen AS p
+        LEFT JOIN stammdatenindustrie AS s ON p.kundennumm = s.kundennumm
+    """
+
+
+def _wl_from_join():
+    return """
+        FROM Whitelist_Kontakte AS w
+        LEFT JOIN stammdatenindustrie AS s ON w.indkundennumm = s.kundennumm
+    """
+
+
+def _kontakt_firma_aus_row(row):
+    wert = str(row.get("firma") or "").strip()
+    if wert and wert.lower() not in ("none", "nan"):
+        return wert
+    return ""
 
 
 def _bereinige_telefon_df(df):
@@ -137,14 +184,23 @@ def suche_telefonnummer(such_name):
     if not such_name:
         return pd.DataFrame()
 
-    teile = _baue_namensteile(such_name)
+    teile = _baue_suchteile(such_name)
     conn_str = fr'DRIVER={{Microsoft Access Driver (*.mdb, *.accdb)}};DBQ={ACCESS_DB_PATH};'
     try:
         conn = pyodbc.connect(conn_str, timeout=5)
 
         query_crm = f"""
-            SELECT personid, vorname, nachname, mobil, mobiltelefon, telefon, linkedin AS linkedin_url, 'CRM' AS quelle
-            FROM crm_personen
+            SELECT DISTINCT
+                p.personid,
+                p.vorname,
+                p.nachname,
+                p.mobil,
+                p.mobiltelefon,
+                p.telefon,
+                p.linkedin AS linkedin_url,
+                s.nama AS firma,
+                'CRM' AS quelle
+            {_crm_from_join()}
             WHERE {_baue_crm_where(teile)}
         """
         df = pd.read_sql(query_crm, conn)
@@ -157,18 +213,18 @@ def suche_telefonnummer(such_name):
             return _bereinige_telefon_df(df)
 
         query_wl = f"""
-            SELECT
-                indpersonid,
-                Vorname,
-                Nachname,
-                Tel_Mobil,
-                Tel_Gesch,
-                Anrede,
-                Ansprache,
-                Firma_Projekt,
-                LinkedIn_URL,
+            SELECT DISTINCT
+                w.indpersonid,
+                w.Vorname,
+                w.Nachname,
+                w.Tel_Mobil,
+                w.Tel_Gesch,
+                w.Anrede,
+                w.Ansprache,
+                w.LinkedIn_URL,
+                s.nama AS firma,
                 'WL' AS quelle
-            FROM Whitelist_Kontakte
+            {_wl_from_join()}
             WHERE {_baue_wl_where(teile)}
         """
         df = pd.read_sql(query_wl, conn)
@@ -191,20 +247,115 @@ def suche_telefonnummer(such_name):
         return pd.DataFrame()
 
 
+def _ist_gueltige_email(wert):
+    wert = str(wert or "").strip()
+    return bool(wert) and wert.lower() not in ("none", "nan") and "@" in wert
+
+
+@st.cache_data(ttl=60)
+def suche_email_kontakte(such_name):
+    """Zweistufige Suche für neue E-Mails: zuerst CRM, sonst Whitelist."""
+    if not str(such_name or "").strip():
+        return pd.DataFrame()
+
+    teile = _baue_suchteile(such_name)
+    conn_str = fr'DRIVER={{Microsoft Access Driver (*.mdb, *.accdb)}};DBQ={ACCESS_DB_PATH};'
+    try:
+        conn = pyodbc.connect(conn_str, timeout=5)
+
+        query_crm = f"""
+            SELECT DISTINCT
+                p.personid,
+                p.vorname,
+                p.nachname,
+                p.emailpers,
+                p.anrede,
+                s.nama AS firma,
+                'CRM' AS quelle
+            {_crm_from_join()}
+            WHERE {_baue_crm_where(teile)}
+        """
+        df = pd.read_sql(query_crm, conn)
+
+        if not df.empty:
+            conn.close()
+            return df
+
+        query_wl = f"""
+            SELECT DISTINCT
+                w.indpersonid,
+                w.Vorname,
+                w.Nachname,
+                w.Email_Gesch,
+                w.Email_Priv,
+                w.Anrede,
+                w.Ansprache,
+                s.nama AS firma,
+                'WL' AS quelle
+            {_wl_from_join()}
+            WHERE {_baue_wl_where(teile)}
+        """
+        df = pd.read_sql(query_wl, conn)
+        conn.close()
+
+        if df.empty:
+            return df
+
+        return df.rename(columns={
+            "indpersonid": "personid",
+            "Vorname": "vorname",
+            "Nachname": "nachname",
+            "Email_Gesch": "email_gesch",
+            "Email_Priv": "email_priv",
+        })
+
+    except Exception:
+        return pd.DataFrame()
+
+
+def baue_email_optionen_aus_kontakt(row):
+    """Liefert wählbare Empfänger-Adressen je nach Quelle (CRM / Whitelist)."""
+    optionen = []
+    quelle = str(row.get("quelle", "")).upper()
+    if quelle == "CRM":
+        if _ist_gueltige_email(row.get("emailpers")):
+            optionen.append({"label": "Persönlich (CRM)", "email": str(row.get("emailpers")).strip()})
+    else:
+        if _ist_gueltige_email(row.get("email_gesch")):
+            optionen.append({"label": "Geschäftlich (Whitelist)", "email": str(row.get("email_gesch")).strip()})
+        if _ist_gueltige_email(row.get("email_priv")):
+            optionen.append({"label": "Privat (Whitelist)", "email": str(row.get("email_priv")).strip()})
+    return optionen
+
+
+def kontakt_email_schluessel(row):
+    quelle = str(row.get("quelle", "X")).upper()
+    personid = str(row.get("personid", "") or "").strip() or "ohne_id"
+    return f"{quelle}_{personid}"
+
+
 @st.cache_data(ttl=60)
 def suche_whatsapp_kontakte(such_name):
     """Sucht in crm_personen und Whitelist_Kontakte nach Name (beide Tabellen, Mobilnummer nötig)."""
     if not str(such_name or "").strip():
         return pd.DataFrame()
 
-    teile = _baue_namensteile(such_name)
+    teile = _baue_suchteile(such_name)
     conn_str = fr'DRIVER={{Microsoft Access Driver (*.mdb, *.accdb)}};DBQ={ACCESS_DB_PATH};'
     try:
         conn = pyodbc.connect(conn_str, timeout=5)
 
         query_crm = f"""
-            SELECT personid, vorname, nachname, mobil, mobiltelefon, telefon, 'CRM' AS quelle
-            FROM crm_personen
+            SELECT DISTINCT
+                p.personid,
+                p.vorname,
+                p.nachname,
+                p.mobil,
+                p.mobiltelefon,
+                p.telefon,
+                s.nama AS firma,
+                'CRM' AS quelle
+            {_crm_from_join()}
             WHERE {_baue_crm_where(teile)}
         """
         df_crm = pd.read_sql(query_crm, conn)
@@ -213,14 +364,15 @@ def suche_whatsapp_kontakte(such_name):
             df_crm = df_crm.drop(columns=["mobiltelefon"])
 
         query_wl = f"""
-            SELECT
-                indpersonid,
-                Vorname,
-                Nachname,
-                Tel_Mobil,
-                Tel_Gesch,
+            SELECT DISTINCT
+                w.indpersonid,
+                w.Vorname,
+                w.Nachname,
+                w.Tel_Mobil,
+                w.Tel_Gesch,
+                s.nama AS firma,
                 'WL' AS quelle
-            FROM Whitelist_Kontakte
+            {_wl_from_join()}
             WHERE {_baue_wl_where(teile)}
         """
         df_wl = pd.read_sql(query_wl, conn)
@@ -674,12 +826,45 @@ def generiere_mail_entwurf(original_text, anweisung, ansprache, absender_name):
         return client.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": prompt}], temperature=0.4).choices[0].message.content
     except Exception as e: return f"Fehler bei der KI-Generierung: {e}"
 
-def sende_email_via_outlook(empfaenger_email, betreff, inhalt, absender_konto_name, anhaenge_pfade=None):
+
+def generiere_neue_mail_entwurf(anweisung, ansprache, empfaenger_name, betreff=""):
+    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    prompt = (
+        f"Du bist Hans Kohlhaas, Geschäftsführer von DigiBest. "
+        f"Schreibe eine NEUE E-Mail (keine Antwort auf eine bestehende Mail).\n"
+        f"Empfänger: {empfaenger_name} ({ansprache})\n"
+        f"Betreff-Vorgabe: {betreff or '(noch offen)'}\n"
+        f"Worum geht es: {anweisung}\n"
+        f"Ton: Klar, respektvoll-direkt.\n"
+        f"Schreibe NUR den reinen Mail-Text inkl. Anrede und Grußformel."
+    )
+    try:
+        return client.chat.completions.create(
+            model="gpt-4o", messages=[{"role": "user", "content": prompt}], temperature=0.4
+        ).choices[0].message.content
+    except Exception as e:
+        return f"Fehler bei der KI-Generierung: {e}"
+
+
+def _setze_outlook_absender(mail, outlook, absender_konto):
+    if not absender_konto:
+        return
+    ziel = str(absender_konto).lower().strip()
+    for acc in outlook.Session.Accounts:
+        smtp = str(getattr(acc, "SmtpAddress", "") or "").lower().strip()
+        name = str(getattr(acc, "DisplayName", "") or "").lower().strip()
+        if ziel in (smtp, name):
+            mail.SendUsingAccount = acc
+            return
+
+
+def sende_email_via_outlook(empfaenger_email, betreff, inhalt, absender_konto, anhaenge_pfade=None, ist_antwort=False):
     outlook = _connect_outlook()
     mail = outlook.CreateItem(0)
     mail.To = empfaenger_email
-    mail.Subject = "AW: " + betreff
+    mail.Subject = f"AW: {betreff}" if ist_antwort else betreff
     mail.Body = inhalt
+    _setze_outlook_absender(mail, outlook, absender_konto)
     try:
         mail.Send()
         hole_relevante_emails.clear()
@@ -785,9 +970,11 @@ with router_panel:
                         meta = []
                         if row.get("Anrede"): meta.append(str(row.get("Anrede")))
                         if row.get("Ansprache"): meta.append(str(row.get("Ansprache")))
-                        if row.get("Firma_Projekt"): meta.append(str(row.get("Firma_Projekt")))
                         if meta:
                             st.caption(" · ".join(meta))
+                    firma = _kontakt_firma_aus_row(row)
+                    if firma:
+                        st.caption(f"🏢 {firma}")
                     final_mobil = clean_for_dialer(row.get("mobil") or row.get("wl_mobil") or row.get("handy"))
                     fest = clean_for_dialer(row.get("telefon"))
 
@@ -869,12 +1056,109 @@ if haupttab == "chat":
 
 # --- REITER 2: MAILS & WHATSAPP ---
 elif haupttab == "mails":
+    with st.expander("✉️ Neue E-Mail verfassen", expanded=False):
+        with st.form("form_ne_mail_suche", clear_on_submit=False):
+            ne_mail_eingabe = st.text_input(
+                "🔍 Empfänger suchen...",
+                value=st.session_state.ne_mail_suchbegriff,
+                placeholder="Name oder Firma…",
+            )
+            btn_ne_mail_suchen = st.form_submit_button("🔍 Suchen", use_container_width=True)
+
+        if btn_ne_mail_suchen:
+            st.session_state.ne_mail_suchbegriff = ne_mail_eingabe.strip()
+            st.session_state.ne_mail_kontakt_key = None
+            st.session_state.ne_mail_entwurf = ""
+
+        ne_suchbegriff = st.session_state.ne_mail_suchbegriff
+        df_ne_mail = suche_email_kontakte(ne_suchbegriff) if ne_suchbegriff else pd.DataFrame()
+
+        if not ne_suchbegriff:
+            st.caption("Name oder Firma eingeben und Suchen klicken.")
+        elif df_ne_mail.empty:
+            st.info("Keine Treffer gefunden.")
+        else:
+            for _, row in df_ne_mail.iterrows():
+                name = f"{row.get('vorname', '')} {row.get('nachname', '')}".strip()
+                key = kontakt_email_schluessel(row)
+                optionen = baue_email_optionen_aus_kontakt(row)
+                firma = _kontakt_firma_aus_row(row)
+                label = f"📧 {name}" + (f" ({firma})" if firma else "") + ("" if optionen else " (keine E-Mail)")
+                if st.button(label, key=f"btn_ne_mail_{key}", disabled=not optionen):
+                    st.session_state.ne_mail_kontakt_key = key
+                    st.session_state.ne_mail_entwurf = ""
+                    st.rerun()
+
+        if st.session_state.ne_mail_kontakt_key and not df_ne_mail.empty:
+            sel_rows = [
+                r for _, r in df_ne_mail.iterrows()
+                if kontakt_email_schluessel(r) == st.session_state.ne_mail_kontakt_key
+            ]
+            if sel_rows:
+                row = sel_rows[0]
+                name = f"{row.get('vorname', '')} {row.get('nachname', '')}".strip()
+                ansprache = str(row.get("ansprache") or row.get("Anrede") or row.get("anrede") or "Sie").strip()
+                email_optionen = baue_email_optionen_aus_kontakt(row)
+
+                st.markdown(f"**Neue E-Mail an {name}**")
+                absender_konten = hole_outlook_konten()
+                absender = st.selectbox("Absender-Konto", absender_konten, key="ne_mail_absender")
+                email_labels = [o["label"] for o in email_optionen]
+                gewaehlte_label = st.radio("Empfänger-Adresse", email_labels, key="ne_mail_empf_adresse")
+                empfaenger_email = next(o["email"] for o in email_optionen if o["label"] == gewaehlte_label)
+                betreff = st.text_input("Betreff", key="ne_mail_betreff")
+                anweisung = st.text_area(
+                    "Worum geht es? (diktieren oder tippen)",
+                    placeholder="z.B. Terminvorschlag für nächste Woche…",
+                    key="ne_mail_anweisung",
+                )
+                col_gen, col_close = st.columns(2)
+                with col_gen:
+                    if st.button("✨ KI-Entwurf generieren", key="btn_ne_mail_gen", use_container_width=True):
+                        if not anweisung.strip():
+                            st.warning("Bitte kurz beschreiben, worum es geht.")
+                        else:
+                            with st.spinner("KI schreibt Entwurf…"):
+                                st.session_state.ne_mail_entwurf = generiere_neue_mail_entwurf(
+                                    anweisung.strip(), ansprache, name, betreff.strip()
+                                )
+                            st.rerun()
+                with col_close:
+                    if st.button("✖ Abbrechen", key="btn_ne_mail_close", use_container_width=True):
+                        st.session_state.ne_mail_kontakt_key = None
+                        st.session_state.ne_mail_entwurf = ""
+                        st.rerun()
+
+                entwurf = st.text_area(
+                    "Mail-Entwurf",
+                    height=220,
+                    key="ne_mail_entwurf",
+                )
+                if str(entwurf or "").startswith("Fehler bei der KI-Generierung:"):
+                    st.error(entwurf)
+                if st.button("🚀 Senden", key="btn_ne_mail_send", use_container_width=True):
+                    if not betreff.strip():
+                        st.warning("Bitte einen Betreff eingeben.")
+                    elif not entwurf.strip():
+                        st.warning("Bitte einen Mail-Text eingeben oder KI-Entwurf generieren.")
+                    elif sende_email_via_outlook(
+                        empfaenger_email,
+                        betreff.strip(),
+                        entwurf.strip(),
+                        absender,
+                        ist_antwort=False,
+                    ):
+                        st.success(f"E-Mail an {name} versendet.")
+                        st.session_state.ne_mail_kontakt_key = None
+                        st.session_state.ne_mail_entwurf = ""
+                        st.rerun()
+
     with st.expander("📱 Manuelle WhatsApp senden"):
         with st.form("form_wa_suche", clear_on_submit=False):
             wa_eingabe = st.text_input(
                 "🔍 Kontakt suchen...",
                 value=st.session_state.wa_suchbegriff,
-                placeholder="Vor- oder Nachname…",
+                placeholder="Name oder Firma…",
             )
             btn_wa_suchen = st.form_submit_button("🔍 Suchen", use_container_width=True)
 
@@ -886,7 +1170,7 @@ elif haupttab == "mails":
         df_anzeige = suche_whatsapp_kontakte(suchbegriff) if suchbegriff else pd.DataFrame()
 
         if not suchbegriff:
-            st.caption("Name eingeben und Suchen klicken.")
+            st.caption("Name oder Firma eingeben und Suchen klicken.")
         elif df_anzeige.empty:
             st.info("Keine Treffer gefunden.")
         else:
@@ -897,7 +1181,9 @@ elif haupttab == "mails":
                     personid = str(row.get("personid", "") or "").strip()
                     if not personid:
                         personid = f"m_{normalisiere_whatsapp_nummer(row['mobil'])}"
-                    if st.button(f"💬 {name}", key=f"btn_wa_{personid}"):
+                    firma = _kontakt_firma_aus_row(row)
+                    btn_label = f"💬 {name}" + (f" ({firma})" if firma else "")
+                    if st.button(btn_label, key=f"btn_wa_{personid}"):
                         st.session_state.wa_selected_id = personid
                         st.rerun()
 
@@ -951,7 +1237,9 @@ elif haupttab == "mails":
                     if f"edit_{i}" in st.session_state:
                         editierter_text = st.text_area("Entwurf:", height=200, key=f"edit_{i}")
                         if st.button("🚀 Senden", key=f"send_{i}"):
-                            if sende_email_via_outlook(mail['Email'], mail['Betreff'], editierter_text, "kohlhaas@digibest.eu"):
+                            if sende_email_via_outlook(
+                                mail['Email'], mail['Betreff'], editierter_text, "kohlhaas@digibest.eu", ist_antwort=True
+                            ):
                                 st.success("Versandt!")
                                 del st.session_state[f"edit_{i}"]
                                 st.rerun()
