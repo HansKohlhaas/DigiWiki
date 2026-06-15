@@ -1,10 +1,15 @@
 import os
 import csv
 import time
+from dotenv import load_dotenv
 from google import genai
 
+load_dotenv()
+
 # --- KONFIGURATION ---
-API_KEY = "REDACTED_GOOGLE_API_KEY"  # <--- HIER WIEDER EINFÜGEN
+API_KEY = os.getenv("GOOGLE_API_KEY")
+if not API_KEY:
+    raise SystemExit("GOOGLE_API_KEY fehlt. Bitte in .env setzen.")
 START_ORDNER = "C:\\" 
 ARCHIV_ORDNER = "Duplikate_Archiv" 
 AUSGABE_CSV = "Wiki_Struktur_Vorschlag.csv"
