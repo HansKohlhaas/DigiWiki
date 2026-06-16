@@ -4,12 +4,12 @@
 		{
 			"label": "Start DigiWiki",
 			"type": "shell",
-			"command": "cmd",
+			"command": "powershell",
 			"args": [
-				"/c",
-				"start.bat"
+				"-NoProfile",
+				"-Command",
+				"Start-Process -FilePath 'cmd.exe' -ArgumentList '/k','start.bat' -WorkingDirectory '${workspaceFolder}' -WindowStyle Normal"
 			],
-			"isBackground": true,
 			"problemMatcher": [],
 			"group": "build"
 		},

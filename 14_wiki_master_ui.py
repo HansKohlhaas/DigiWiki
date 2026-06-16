@@ -1,12 +1,95 @@
 import sys
+import os
+import wave
+import tempfile
 import traceback
 import markdown
+import numpy as np
+import sounddevice as sd
+import speech_recognition as sr
+from collections import deque
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
-                             QHBoxLayout, QPushButton, QTextBrowser, QLineEdit)
-from PyQt5.QtCore import QThread, pyqtSignal
+                             QHBoxLayout, QPushButton, QTextBrowser, QLineEdit, QLabel)
+from PyQt5.QtCore import QThread, pyqtSignal, QTimer, Qt
+from PyQt5.QtGui import QPainter, QColor
 
 # Wir importieren unser Orakel-Gehirn
 from ask_wiki import frage_das_wiki
+
+class WellenAnzeige(QWidget):
+    """Live-Schallwellen-Anzeige: zeigt den Mikrofon-Pegel in Echtzeit,
+    damit sofort sichtbar ist, ob das Mikro tatsaechlich Ton empfaengt."""
+
+    def __init__(self, balken=120):
+        super().__init__()
+        self.max_balken = balken
+        self.pegel = deque([0.0] * balken, maxlen=balken)
+        self.aktiv = False
+        self.setMinimumHeight(64)
+        self.setStyleSheet("background-color: #0f172a; border-radius: 6px;")
+
+    def push(self, wert):
+        # Neue Werte links einfuegen -> die Welle laeuft von links nach rechts.
+        self.pegel.appendleft(max(0.0, min(1.0, float(wert))))
+        self.update()
+
+    def reset(self, aktiv=False):
+        self.aktiv = aktiv
+        self.pegel = deque([0.0] * self.max_balken, maxlen=self.max_balken)
+        self.update()
+
+    def paintEvent(self, event):
+        qp = QPainter(self)
+        qp.setRenderHint(QPainter.Antialiasing, True)
+        breite = self.width()
+        hoehe = self.height()
+        mitte = hoehe / 2.0
+        n = len(self.pegel)
+        if n == 0:
+            return
+        # Ruhelinie in der Mitte
+        qp.setPen(QColor("#334155"))
+        qp.drawLine(0, int(mitte), breite, int(mitte))
+        # Balken (gruen bei Aufnahme, gedaempft sonst)
+        farbe = QColor("#22c55e") if self.aktiv else QColor("#475569")
+        qp.setPen(Qt.NoPen)
+        qp.setBrush(farbe)
+        balken_breite = breite / float(n)
+        for i, wert in enumerate(self.pegel):
+            balken_hoehe = max(2.0, wert * (hoehe - 8))
+            x = i * balken_breite
+            y = mitte - balken_hoehe / 2.0
+            qp.drawRect(int(x), int(y), max(1, int(balken_breite) - 1), int(balken_hoehe))
+
+class DiktatWorker(QThread):
+    """Wandelt eine aufgenommene WAV-Datei per Google Speech in Text um.
+    Laeuft im Hintergrund, damit die UI waehrend des Netzwerkaufrufs nicht einfriert."""
+    fertig = pyqtSignal(str)
+    fehler = pyqtSignal(str)
+
+    def __init__(self, wav_pfad):
+        super().__init__()
+        self.wav_pfad = wav_pfad
+
+    def run(self):
+        try:
+            r = sr.Recognizer()
+            with sr.AudioFile(self.wav_pfad) as quelle:
+                audio = r.record(quelle)
+            text = r.recognize_google(audio, language="de-DE")
+            self.fertig.emit(text)
+        except sr.UnknownValueError:
+            self.fehler.emit("Konnte dich leider nicht verstehen.")
+        except sr.RequestError:
+            self.fehler.emit("Keine Verbindung zur Spracherkennung (Internet?).")
+        except Exception as e:
+            self.fehler.emit(f"Diktat-Fehler: {e}")
+        finally:
+            try:
+                if os.path.exists(self.wav_pfad):
+                    os.remove(self.wav_pfad)
+            except OSError:
+                pass
 
 class WikiWorker(QThread):
     """Hintergrund-Arbeiter, der die Frage UND den bisherigen Verlauf transportiert."""
@@ -61,8 +144,22 @@ class WikiMasterUI(QMainWindow):
         self.eingabe.returnPressed.connect(self.frage_senden)
         layout.addWidget(self.eingabe)
         
+        # Live-Schallwellen-Anzeige (zeigt, ob das Mikro Ton empfaengt)
+        self.wellen_anzeige = WellenAnzeige()
+        layout.addWidget(self.wellen_anzeige)
+        
+        # Status-Anzeige fuer das Diktat (Mikrofon-Feedback)
+        self.status_label = QLabel("")
+        self.status_label.setStyleSheet("color: #e67e22; font-style: italic; font-size: 12px; padding: 2px 0;")
+        layout.addWidget(self.status_label)
+        
         # --- BEREICH 3: Die Buttons ---
         button_layout = QHBoxLayout()
+        
+        self.btn_mikrofon = QPushButton("🎤 Diktieren")
+        self.btn_mikrofon.setStyleSheet("background-color: #e74c3c; color: white; padding: 10px 20px; font-weight: bold; border-radius: 5px; font-size: 14px;")
+        self.btn_mikrofon.clicked.connect(self.toggle_aufnahme)
+        button_layout.addWidget(self.btn_mikrofon)
         
         self.btn_senden = QPushButton("Senden")
         self.btn_senden.setStyleSheet("background-color: #0ea5e9; color: white; padding: 10px 20px; font-weight: bold; border-radius: 5px; font-size: 14px;")
@@ -77,6 +174,106 @@ class WikiMasterUI(QMainWindow):
         
         layout.addLayout(button_layout)
         self.worker = None
+        
+        # --- Diktat / Aufnahme-Status ---
+        self.aufnahme_aktiv = False
+        self.aufnahme_stream = None
+        self.aufnahme_frames = []
+        self.diktat_worker = None
+        self.SAMPLERATE = 16000  # 16 kHz ist Standard fuer KI-Spracherkennung
+        
+        # Live-Pegel fuer die Wellenanzeige (Callback-Thread schreibt, Timer liest)
+        self.aktueller_pegel = 0.0
+        self.pegel_timer = QTimer(self)
+        self.pegel_timer.setInterval(40)
+        self.pegel_timer.timeout.connect(self._aktualisiere_welle)
+
+    # --- DIKTAT / MIKROFON ---
+
+    def toggle_aufnahme(self):
+        """Ein Klick startet die Aufnahme, der naechste stoppt sie und transkribiert."""
+        if self.aufnahme_aktiv:
+            self._stoppe_aufnahme()
+        else:
+            self._starte_aufnahme()
+
+    def _audio_callback(self, indata, frames, zeit, status):
+        # Laeuft im PortAudio-Thread: Rohdaten sammeln + aktuellen Pegel merken.
+        self.aufnahme_frames.append(indata.copy())
+        try:
+            self.aktueller_pegel = float(np.abs(indata).max()) / 32768.0
+        except Exception:
+            self.aktueller_pegel = 0.0
+
+    def _aktualisiere_welle(self):
+        # Pegel etwas verstaerken, damit normale Sprache deutlich ausschlaegt.
+        self.wellen_anzeige.push(min(1.0, self.aktueller_pegel * 3.0))
+
+    def _starte_aufnahme(self):
+        try:
+            self.aufnahme_frames = []
+            self.aufnahme_stream = sd.InputStream(
+                samplerate=self.SAMPLERATE, channels=1, dtype='int16',
+                callback=self._audio_callback,
+            )
+            self.aufnahme_stream.start()
+        except Exception as e:
+            self.status_label.setText(f"❌ Mikrofon-Fehler: {e}")
+            return
+        self.aufnahme_aktiv = True
+        self.aktueller_pegel = 0.0
+        self.wellen_anzeige.reset(aktiv=True)
+        self.pegel_timer.start()
+        self.btn_mikrofon.setText("⏹ Aufnahme stoppen")
+        self.status_label.setText("🎤 Aufnahme laeuft - sprich jetzt, dann erneut auf den Button klicken.")
+
+    def _stoppe_aufnahme(self):
+        self.aufnahme_aktiv = False
+        self.pegel_timer.stop()
+        self.wellen_anzeige.reset(aktiv=False)
+        self.btn_mikrofon.setText("🎤 Diktieren")
+        try:
+            if self.aufnahme_stream is not None:
+                self.aufnahme_stream.stop()
+                self.aufnahme_stream.close()
+        except Exception:
+            pass
+        self.aufnahme_stream = None
+
+        if not self.aufnahme_frames:
+            self.status_label.setText("⚠️ Keine Audiodaten aufgenommen.")
+            return
+
+        audio = np.concatenate(self.aufnahme_frames, axis=0)
+        wav_pfad = tempfile.mktemp(suffix=".wav")
+        try:
+            with wave.open(wav_pfad, 'wb') as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)  # int16 = 2 Bytes
+                wf.setframerate(self.SAMPLERATE)
+                wf.writeframes(audio.tobytes())
+        except Exception as e:
+            self.status_label.setText(f"❌ Konnte Aufnahme nicht speichern: {e}")
+            return
+
+        self.status_label.setText("⏳ Verarbeite Sprache ...")
+        self.btn_mikrofon.setEnabled(False)
+        self.diktat_worker = DiktatWorker(wav_pfad)
+        self.diktat_worker.fertig.connect(self._diktat_fertig)
+        self.diktat_worker.fehler.connect(self._diktat_fehler)
+        self.diktat_worker.start()
+
+    def _diktat_fertig(self, text):
+        self.btn_mikrofon.setEnabled(True)
+        self.status_label.setText("✅ Erkannt - bitte pruefen/anpassen und auf 'Senden' klicken.")
+        # Editierbar anzeigen: vorhandenen Text nicht ueberschreiben, sondern ergaenzen.
+        vorhandener = self.eingabe.text().strip()
+        self.eingabe.setText(f"{vorhandener} {text}".strip())
+        self.eingabe.setFocus()
+
+    def _diktat_fehler(self, meldung):
+        self.btn_mikrofon.setEnabled(True)
+        self.status_label.setText(f"❌ {meldung}")
 
     def frage_senden(self):
         frage = self.eingabe.text().strip()
@@ -88,6 +285,7 @@ class WikiMasterUI(QMainWindow):
         """Bereitet die Daten vor und startet den gedächtnisunterstützten Worker."""
         self.btn_senden.setEnabled(False)
         self.btn_hexal.setEnabled(False)
+        self.btn_mikrofon.setEnabled(False)
         self.eingabe.setEnabled(False)
         
         # Wir merken uns die Frage für das Gedächtnis-Update später
@@ -140,6 +338,7 @@ class WikiMasterUI(QMainWindow):
         
         self.btn_senden.setEnabled(True)
         self.btn_hexal.setEnabled(True)
+        self.btn_mikrofon.setEnabled(True)
         self.eingabe.setEnabled(True)
         self.eingabe.setFocus()
 
