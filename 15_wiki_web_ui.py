@@ -84,7 +84,10 @@ if "ne_mail_kontakt_key" not in st.session_state:
     st.session_state.ne_mail_kontakt_key = None
 import re
 import os
+import io
 import json
+import hashlib
+import speech_recognition as sr
 from datetime import datetime, timedelta
 import win32com.client
 import pythoncom
@@ -1025,6 +1028,42 @@ with st.expander("📊 System-Status & Dashboard"):
 
 st.markdown("---")
 
+# --- DIKTAT: Browser-Aufnahme + serverseitige Spracherkennung ---
+# Vor allem fuer den Desktop-Browser gedacht (am Handy gibt es das Tastatur-Mikro).
+def transkribiere_audio(audio_bytes):
+    """Wandelt aufgenommene WAV-Audiodaten in Text um. Rueckgabe: (text, fehler)."""
+    try:
+        r = sr.Recognizer()
+        with sr.AudioFile(io.BytesIO(audio_bytes)) as quelle:
+            audio = r.record(quelle)
+        return r.recognize_google(audio, language="de-DE"), None
+    except sr.UnknownValueError:
+        return None, "Konnte die Aufnahme nicht verstehen. Bitte erneut versuchen."
+    except sr.RequestError:
+        return None, "Keine Verbindung zur Spracherkennung (Internet?)."
+    except Exception as e:
+        return None, f"Diktat-Fehler: {e}"
+
+if hasattr(st, "audio_input"):
+    with st.expander("🎤 Diktat aufnehmen (für Desktop ohne Tastatur-Mikro)"):
+        audio_value = st.audio_input(
+            "Aufnehmen – der erkannte Text erscheint unten editierbar im Kommando-Feld:",
+            key=f"diktat_audio_{st.session_state.get('diktat_run', 0)}",
+        )
+        if audio_value is not None:
+            audio_bytes = audio_value.getvalue()
+            signatur = hashlib.md5(audio_bytes).hexdigest()
+            if st.session_state.get("diktat_signatur") != signatur:
+                st.session_state.diktat_signatur = signatur
+                with st.spinner("Verarbeite Sprache ..."):
+                    text, fehler = transkribiere_audio(audio_bytes)
+                if fehler:
+                    st.warning(fehler)
+                elif text:
+                    bestehend = st.session_state.get("global_cmd_input", "")
+                    st.session_state.global_cmd_input = f"{bestehend} {text}".strip()
+                    st.rerun()
+
 # DER KI-SPRACHROUTER (Entkoppelt: Eingabe -> Editieren -> Ausführen)
 with st.form("form_global_cmd", clear_on_submit=True):
     global_cmd = st.text_input(
@@ -1036,6 +1075,11 @@ with st.form("form_global_cmd", clear_on_submit=True):
 
 if btn_execute and global_cmd and global_cmd.strip():
     st.session_state.pending_global_cmd = global_cmd.strip()
+    # Diktat-Aufnahme nach dem Ausfuehren leeren -> bereit fuer die naechste Eingabe.
+    _alter_audio_key = f"diktat_audio_{st.session_state.get('diktat_run', 0)}"
+    st.session_state.pop(_alter_audio_key, None)
+    st.session_state.diktat_run = st.session_state.get("diktat_run", 0) + 1
+    st.session_state.diktat_signatur = None
     st.rerun()
 
 if st.session_state.pending_global_cmd:
