@@ -22,6 +22,7 @@ wiki_quarantaene.json
 wiki_schicht_snapshot.json
 *.url
 digiwiki_zugang.txt
+NAECHSTER_CHAT.md
 15_wiki_web_ui0.py
 15_wiki_web_ui1.py
 9_wiki_waechter0.py
