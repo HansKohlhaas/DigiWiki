@@ -22,7 +22,17 @@ try {
         [W.K]::SetThreadExecutionState(0x80000003) | Out-Null
 
         if (((Get-Date) - $lastTailscale).TotalSeconds -ge 90) {
-            tailscale status 2>$null | Out-Null
+            try {
+                # Offline erkennen und neu verbinden -> Handy bleibt ueber Internet erreichbar.
+                $status = (tailscale status --json 2>$null | ConvertFrom-Json)
+                if (-not ($status -and $status.Self.Online)) {
+                    tailscale up --accept-dns=true 2>$null | Out-Null
+                }
+                $prefs = (tailscale debug prefs 2>$null | ConvertFrom-Json)
+                if ($prefs.RouteAll -and -not $prefs.ExitNodeID) {
+                    tailscale up --reset --exit-node="" --accept-routes=false 2>$null | Out-Null
+                }
+            } catch {}
             $lastTailscale = Get-Date
         }
 
