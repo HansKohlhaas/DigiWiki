@@ -1064,8 +1064,15 @@ if hasattr(st, "audio_input"):
                     st.session_state.global_cmd_input = f"{bestehend} {text}".strip()
                     st.rerun()
 
+# Kommando-Feld nach dem Ausfuehren leeren (vor Widget-Erstellung). Bewusst KEIN
+# clear_on_submit, da das mit programmatisch gesetztem Diktat-Text kollidiert und
+# nach dem ersten Absenden weitere Ausfuehrungen blockieren kann.
+if st.session_state.get("cmd_clear"):
+    st.session_state.global_cmd_input = ""
+    st.session_state.cmd_clear = False
+
 # DER KI-SPRACHROUTER (Entkoppelt: Eingabe -> Editieren -> Ausführen)
-with st.form("form_global_cmd", clear_on_submit=True):
+with st.form("form_global_cmd", clear_on_submit=False):
     global_cmd = st.text_input(
         "🎙️ Kommando (Diktieren, ggf. korrigieren, dann starten):",
         placeholder="z.B. Rufe Marc Gebur an... oder: Notiere für das Meeting...",
@@ -1075,7 +1082,9 @@ with st.form("form_global_cmd", clear_on_submit=True):
 
 if btn_execute and global_cmd and global_cmd.strip():
     st.session_state.pending_global_cmd = global_cmd.strip()
-    # Diktat-Aufnahme nach dem Ausfuehren leeren -> bereit fuer die naechste Eingabe.
+    # Nach dem Ausfuehren: Kommando-Feld leeren + Diktat-Aufnahme zuruecksetzen,
+    # damit die App fuer die naechste Anweisung bereit ist.
+    st.session_state.cmd_clear = True
     _alter_audio_key = f"diktat_audio_{st.session_state.get('diktat_run', 0)}"
     st.session_state.pop(_alter_audio_key, None)
     st.session_state.diktat_run = st.session_state.get("diktat_run", 0) + 1
