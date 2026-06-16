@@ -49,6 +49,29 @@ WHATSAPP_PHONE_NUMBER_ID = os.getenv("DIGIWIKI_WHATSAPP_PHONE_NUMBER_ID", "").st
 WHATSAPP_CLOUD_API_VERSION = os.getenv("DIGIWIKI_WHATSAPP_CLOUD_API_VERSION", "v19.0")
 
 
+def chroma_db_path_str() -> str:
+    """ASCII-sicherer Pfad zur Chroma-DB fuer chromadb 1.x.
+
+    Der Rust-basierte HNSW-Reader von chromadb >=1.x kann einen Index NICHT aus
+    einem Pfad mit Nicht-ASCII-Zeichen laden (hier das 'ue' in 'Makrouebungen').
+    Die SQLite-Metadaten funktionieren zwar, aber das Laden des HNSW-Index schlaegt
+    mit 'Error loading hnsw index' fehl. Auf Windows weichen wir daher auf den
+    8.3-Kurzpfad (rein ASCII) aus; sonst bleibt es beim Originalpfad.
+    """
+    pfad = str(CHROMA_DB_PATH)
+    if os.name == "nt" and not pfad.isascii():
+        try:
+            import ctypes
+
+            puffer = ctypes.create_unicode_buffer(4096)
+            laenge = ctypes.windll.kernel32.GetShortPathNameW(pfad, puffer, 4096)
+            if laenge and puffer.value and puffer.value.isascii():
+                return puffer.value
+        except Exception:
+            pass
+    return pfad
+
+
 WISSENSBEREICHE = {
     "vollzugriff": {
         "beschreibung": "Gesamte Wissensbasis ohne Filter",

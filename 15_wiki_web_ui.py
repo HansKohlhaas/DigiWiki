@@ -110,7 +110,9 @@ from config import (
     WHATSAPP_CLOUD_API_VERSION,
     WHATSAPP_DEFAULT_COUNTRY_CODE,
     WHATSAPP_PHONE_NUMBER_ID,
+    liste_wissensbereiche,
 )
+from ask_wiki import frage_das_wiki
 
 load_dotenv()
 
@@ -537,16 +539,19 @@ def lade_whitelist():
 # 3. KI LOGIK (NL2SQL & Sprach-Router)
 # ==========================================
 def analysiere_sprachkommando(kommando_text):
-    """Weist den Freitext einer der drei Aktionen (Anruf, Notiz, SQL) zu."""
+    """Weist den Freitext einer von vier Aktionen (Anruf, Notiz, SQL, Wissen) zu."""
     client = OpenAI()
     prompt = f"""
-    Analysiere den folgenden Befehl und ordne ihn in eine dieser drei Kategorien ein:
+    Analysiere den folgenden Befehl und ordne ihn in eine dieser vier Kategorien ein:
     1. 'anruf': Der Nutzer möchte jemanden anrufen (Name extrahieren).
     2. 'notiz': Der Nutzer möchte sich etwas notieren/merken (Inhalt extrahieren).
-    3. 'datenbank': Eine allgemeine Frage, die in der SQL-Datenbank gesucht werden soll.
+    3. 'datenbank': Eine strukturierte Abfrage an die Firmen-/CRM-Datenbank (Microsoft Access/SQL),
+       z.B. konkrete Kontaktdaten, Adresslisten, Anzahlen, Felder oder Tabelleninhalte.
+    4. 'wissen': Eine allgemeine Wissens- oder Inhaltsfrage zu Dokumenten, Verfahren, Verträgen,
+       Formularen oder Firmenwissen. Dies ist der STANDARDFALL, wenn nichts anderes eindeutig passt.
 
     Antworte AUSSCHLIESSLICH im JSON-Format:
-    {{"kategorie": "anruf" | "notiz" | "datenbank", "ziel_name": "Name der Person falls Anruf, sonst leer", "text_inhalt": "Notiztext oder Suchfrage"}}
+    {{"kategorie": "anruf" | "notiz" | "datenbank" | "wissen", "ziel_name": "Name der Person falls Anruf, sonst leer", "text_inhalt": "Notiztext oder Frage"}}
 
     Befehl: "{kommando_text}"
     """
@@ -559,7 +564,18 @@ def analysiere_sprachkommando(kommando_text):
         )
         return json.loads(response.choices[0].message.content)
     except Exception:
-        return {"kategorie": "datenbank", "text_inhalt": kommando_text}
+        return {"kategorie": "wissen", "text_inhalt": kommando_text}
+
+def baue_chat_historie_text(historie, max_eintraege=10):
+    """Baut aus der Chat-Historie einen Verlaufstext (Nutzer/Assistenz) fuer das RAG."""
+    zeilen = []
+    for eintrag in historie[-max_eintraege:]:
+        rolle = "Nutzer" if eintrag.get("rolle") == "user" else "Assistenz"
+        text = str(eintrag.get("text", "")).strip()
+        if text:
+            zeilen.append(f"{rolle}: {text}")
+    return "\n".join(zeilen)
+
 
 def uebersetze_frage_in_sql(nutzer_frage, schema_text, dictionary_csv):
     client = OpenAI()
@@ -594,13 +610,41 @@ def uebersetze_frage_in_sql(nutzer_frage, schema_text, dictionary_csv):
     except Exception as e:
         return f"Fehler bei der KI-Übersetzung: {e}"
 
+def _eindeutige_spaltennamen(namen):
+    """Macht doppelte Spaltennamen eindeutig (z.B. bei JOINs mit SELECT *).
+
+    pandas bricht sonst mit 'Duplicate column names found' ab, wenn zwei
+    verbundene Tabellen gleichnamige Spalten (kundennumm, telefon, ...) liefern.
+    """
+    gesehen = {}
+    ergebnis = []
+    for name in namen:
+        basis = name or "spalte"
+        if basis in gesehen:
+            gesehen[basis] += 1
+            ergebnis.append(f"{basis}_{gesehen[basis]}")
+        else:
+            gesehen[basis] = 0
+            ergebnis.append(basis)
+    return ergebnis
+
+
 def fuehre_sql_aus(sql_query, db_pfad=ACCESS_DB_PATH):
     conn_str = f"DRIVER={{Microsoft Access Driver (*.mdb, *.accdb)}};DBQ={db_pfad};"
     try:
         conn = pyodbc.connect(conn_str)
-        df = pd.read_sql(sql_query, conn)
-        conn.close()
-        return df
+        try:
+            # Bewusst ueber den Cursor (statt pd.read_sql), um doppelte Spaltennamen
+            # aus JOIN/SELECT * sauber abzufangen.
+            cursor = conn.cursor()
+            cursor.execute(sql_query)
+            if cursor.description is None:
+                return pd.DataFrame()
+            spalten = _eindeutige_spaltennamen([d[0] for d in cursor.description])
+            zeilen = [tuple(row) for row in cursor.fetchall()]
+            return pd.DataFrame.from_records(zeilen, columns=spalten)
+        finally:
+            conn.close()
     except Exception as e:
         return f"Fehler bei der Datenbankabfrage: {e}"
 
@@ -1114,8 +1158,18 @@ if st.session_state.pending_global_cmd:
                 "notiz_msg": msg,
                 "notiz_text": notiz_text,
             }
+        elif kategorie == "datenbank":
+            st.session_state.pending_chat_frage = {
+                "frage": analyse.get("text_inhalt", cmd_text),
+                "typ": "datenbank",
+            }
+            st.session_state.router_state = None
         else:
-            st.session_state.pending_chat_frage = analyse.get("text_inhalt", cmd_text)
+            # Fallback: alles andere geht als Wissensfrage an die Chroma-Wissensbasis.
+            st.session_state.pending_chat_frage = {
+                "frage": analyse.get("text_inhalt", cmd_text),
+                "typ": "wissen",
+            }
             st.session_state.router_state = None
 
 router_panel = st.container()
@@ -1194,37 +1248,88 @@ haupttab = st.radio(
 
 # --- REITER 1: CHAT ---
 if haupttab == "chat":
+    _chat_modus_labels = {
+        "wissen": "🧠 Wiki-Wissen",
+        "datenbank": "🗄️ Datenbank (SQL)",
+    }
+    col_modus, col_bereich = st.columns([1, 1])
+    with col_modus:
+        chat_modus = st.radio(
+            "Modus",
+            options=list(_chat_modus_labels.keys()),
+            format_func=lambda key: _chat_modus_labels[key],
+            horizontal=True,
+            key="chat_modus",
+        )
+    with col_bereich:
+        if chat_modus == "wissen":
+            wiki_bereich = st.selectbox(
+                "Wissensbereich",
+                options=liste_wissensbereiche(),
+                key="wiki_bereich",
+            )
+        else:
+            wiki_bereich = None
+
     for r in st.session_state.chat_historie:
         with st.chat_message(r["rolle"]): st.markdown(r["text"])
 
-    eingabe_frage = st.chat_input("Frage an die Datenbank...")
-    frage = eingabe_frage
-    if not frage and st.session_state.pending_chat_frage:
-        frage = st.session_state.pending_chat_frage
+    eingabe_frage = st.chat_input("Frage ans Wiki oder die Datenbank...")
+
+    # Frage + Typ ermitteln: direkte Eingabe nutzt den gewaehlten Modus,
+    # eine vom Sprach-Router uebergebene Frage bringt ihren eigenen Typ mit.
+    frage = None
+    frage_typ = chat_modus
+    if eingabe_frage:
+        frage = eingabe_frage
+        frage_typ = chat_modus
+    elif st.session_state.pending_chat_frage:
+        pending = st.session_state.pending_chat_frage
         st.session_state.pending_chat_frage = None
+        if isinstance(pending, dict):
+            frage = pending.get("frage")
+            frage_typ = pending.get("typ", "wissen")
+        else:
+            frage = pending
+            frage_typ = "wissen"
 
     if frage:
+        historie_text = baue_chat_historie_text(st.session_state.chat_historie)
+
         with st.chat_message("user"): st.markdown(frage)
         st.session_state.chat_historie.append({"rolle": "user", "text": frage})
 
         with st.chat_message("assistant"):
-            with st.spinner("Durchsuche Datenbank..."):
-                try:
-                    generiertes_sql = uebersetze_frage_in_sql(frage, db_schema, db_dictionary)
-                    ergebnis = fuehre_sql_aus(generiertes_sql)
-                    
-                    if isinstance(ergebnis, pd.DataFrame):
-                        if ergebnis.empty:
-                            st.info("Keine Treffer gefunden.")
-                            st.session_state.chat_historie.append({"rolle": "assistant", "text": "Keine Treffer."})
+            if frage_typ == "wissen":
+                with st.spinner("Durchsuche die Wissensbasis..."):
+                    ergebnis = frage_das_wiki(frage, historie_text=historie_text, bereich=wiki_bereich)
+                antwort = ergebnis.get("antwort", "")
+                quellen = ergebnis.get("quellen", [])
+                st.markdown(antwort)
+                if quellen:
+                    st.caption("📚 Quellen: " + ", ".join(quellen))
+                hist_text = antwort
+                if quellen:
+                    hist_text += "\n\n*📚 Quellen: " + ", ".join(quellen) + "*"
+                st.session_state.chat_historie.append({"rolle": "assistant", "text": hist_text})
+            else:
+                with st.spinner("Durchsuche Datenbank..."):
+                    try:
+                        generiertes_sql = uebersetze_frage_in_sql(frage, db_schema, db_dictionary)
+                        ergebnis = fuehre_sql_aus(generiertes_sql)
+
+                        if isinstance(ergebnis, pd.DataFrame):
+                            if ergebnis.empty:
+                                st.info("Keine Treffer gefunden.")
+                                st.session_state.chat_historie.append({"rolle": "assistant", "text": "Keine Treffer."})
+                            else:
+                                st.success(f"{len(ergebnis)} Datensätze gefunden:")
+                                st.dataframe(ergebnis, use_container_width=True)
+                                st.session_state.chat_historie.append({"rolle": "assistant", "text": f"Tabelle mit {len(ergebnis)} Zeilen generiert."})
                         else:
-                            st.success(f"{len(ergebnis)} Datensätze gefunden:")
-                            st.dataframe(ergebnis, use_container_width=True)
-                            st.session_state.chat_historie.append({"rolle": "assistant", "text": f"Tabelle mit {len(ergebnis)} Zeilen generiert."})
-                    else:
-                        st.error(ergebnis)
-                except Exception as e: 
-                    st.error(f"❌ Fehler: {str(e)}")
+                            st.error(ergebnis)
+                    except Exception as e:
+                        st.error(f"❌ Fehler: {str(e)}")
 
 # --- REITER 2: MAILS & WHATSAPP ---
 elif haupttab == "mails":

@@ -5,14 +5,14 @@ from langchain_chroma import Chroma
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_classic.chains.combine_documents import create_stuff_documents_chain
 from langchain_classic.chains import create_retrieval_chain
-from config import CHROMA_DB_PATH, ist_gueltiger_wissensbereich, liste_wissensbereiche
+from config import chroma_db_path_str, ist_gueltiger_wissensbereich, liste_wissensbereiche
 
 # 1. WICHTIG: ChromaDB Telemetrie hart abschalten (verhindert Netzwerk-Hänger)
 os.environ["ANONYMIZED_TELEMETRY"] = "False"
 
 load_dotenv()
 
-DATENBANK_ORDNER = str(CHROMA_DB_PATH)
+DATENBANK_ORDNER = chroma_db_path_str()
 
 # --- DER NEUE C-LEVEL SYSTEM-PROMPT ---
 SYSTEM_PROMPT = """Du bist die exklusive, hochprofessionelle KI-Assistenz für den Geschäftsführer von DigiBest.
@@ -51,7 +51,7 @@ def frage_das_wiki(aktuelle_frage, historie_text="", bereich=None, max_treffer=5
         retriever = baue_retriever(vektor_datenbank, bereich=bereich, max_treffer=max_treffer)
         
         # 3. Timeout und Retries einbauen, um Endlos-Warten zu verhindern
-        llm = ChatGoogleGenerativeAI(model="gemini-pro", temperature=0.1, timeout=15, max_retries=1)
+        llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.1, timeout=30, max_retries=1)
         
         # 4. Den neuen Prompt zusammenbauen
         prompt = ChatPromptTemplate.from_messages([
