@@ -30,6 +30,63 @@ function Repair-RouteAllStuck {
     }
 }
 
+function Ensure-TailscaleServe {
+    # HTTPS-Proxy im Tailnet: stabiler Remote-Zugriff vom Handy (WebSocket/Mobilfunk).
+    param([string]$DnsName)
+
+    $needsReset = $false
+    $serveStatus = tailscale serve status 2>&1
+    if ($LASTEXITCODE -ne 0 -or -not ($serveStatus -match 'localhost:8501|127\.0\.0\.1:8501')) {
+        $needsReset = $true
+    } elseif ($DnsName) {
+        # Serve haengt manchmal -> HTTPS-Timeout obwohl http://100.x:8501 geht.
+        try {
+            $null = Invoke-WebRequest -Uri "https://$DnsName" -UseBasicParsing -TimeoutSec 12 -MaximumRedirection 0
+        } catch {
+            $needsReset = $true
+            Write-Host '[INFO] Tailscale Serve antwortet nicht – neu einrichten ...'
+        }
+    }
+
+    if ($needsReset) {
+        Write-Host '[INFO] Tailscale Serve fuer Port 8501 einrichten (HTTPS Remote) ...'
+        tailscale serve reset 2>$null | Out-Null
+        tailscale serve --bg --https=443 http://127.0.0.1:8501 2>$null | Out-Null
+        Start-Sleep -Seconds 2
+    }
+}
+
+function Ensure-FirewallTailscale {
+    # Eingehende Regeln fuer Port 8501 (alle Profile inkl. Public).
+    $ruleName = 'DigiWiki Streamlit 8501 Tailscale'
+    $existing = Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue
+    if (-not $existing) {
+        Write-Host '[INFO] Firewall-Regel fuer Tailscale-Zugriff (Port 8501) anlegen ...'
+        New-NetFirewallRule -DisplayName $ruleName -Direction Inbound -Action Allow `
+            -Protocol TCP -LocalPort 8501 -Profile Any -Enabled True `
+            -ErrorAction SilentlyContinue | Out-Null
+    }
+
+    # Tailscale-Adapter als "Privat" (nicht Oeffentlich) – sonst blockiert Windows eingehend.
+    $tsProfile = Get-NetConnectionProfile -InterfaceAlias 'Tailscale' -ErrorAction SilentlyContinue
+    if ($tsProfile -and $tsProfile.NetworkCategory -eq 'Public') {
+        Write-Host '[INFO] Tailscale-Netzwerk auf Privat setzen (Firewall) ...'
+        Set-NetConnectionProfile -InterfaceAlias 'Tailscale' -NetworkCategory Private -ErrorAction SilentlyContinue
+    }
+
+    # Tailscale-In-Regeln oft nur Domain+Private – Ergaenzung fuer Public falls noetig.
+    $tsIn = Get-NetFirewallRule -DisplayName 'Tailscale-In' -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($tsIn -and ($tsIn.Profile -notmatch 'Public')) {
+        $extraName = 'Tailscale-In-Public-DigiWiki'
+        if (-not (Get-NetFirewallRule -DisplayName $extraName -ErrorAction SilentlyContinue)) {
+            Write-Host '[INFO] Zusaetzliche Tailscale-Inbound-Regel (Public-Profil) ...'
+            New-NetFirewallRule -DisplayName $extraName -Direction Inbound -Action Allow `
+                -Program "$env:ProgramFiles\Tailscale\tailscale.exe" -Profile Public `
+                -Enabled True -ErrorAction SilentlyContinue | Out-Null
+        }
+    }
+}
+
 $service = Get-Service -Name 'Tailscale' -ErrorAction SilentlyContinue
 if ($service) {
     # Dienst dauerhaft auf "Automatisch" -> nach Neustart sofort wieder ueber Internet erreichbar.
@@ -70,10 +127,18 @@ $online = [string]$status.Self.Online
 $prefs = Get-TailscalePrefs
 $routeAll = if ($prefs) { [string]$prefs.RouteAll } else { 'unknown' }
 
+if ($ip -and ($online -eq 'True')) {
+    Ensure-FirewallTailscale
+    Ensure-TailscaleServe -DnsName $dns
+}
+
 Write-Host "TAILSCALE_IP=$ip"
 Write-Host "TAILSCALE_DNS=$dns"
 Write-Host "TAILSCALE_ONLINE=$online"
 Write-Host "TAILSCALE_ROUTEALL=$routeAll"
+if ($dns) {
+    Write-Host "TAILSCALE_HTTPS=https://$dns"
+}
 
 if ($ip -and ($online -eq 'True')) {
     if ($routeAll -eq 'True') {

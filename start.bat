@@ -64,10 +64,12 @@ echo.
 echo [INFO] Tailscale vorbereiten ...
 set "TAILSCALE_IP="
 set "TAILSCALE_DNS="
+set "TAILSCALE_HTTPS="
 set "TAILSCALE_ONLINE=False"
 for /f "tokens=1,* delims==" %%a in ('powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%digiwiki_tailscale_fix.ps1"') do (
     if /i "%%a"=="TAILSCALE_IP" set "TAILSCALE_IP=%%b"
     if /i "%%a"=="TAILSCALE_DNS" set "TAILSCALE_DNS=%%b"
+    if /i "%%a"=="TAILSCALE_HTTPS" set "TAILSCALE_HTTPS=%%b"
     if /i "%%a"=="TAILSCALE_ONLINE" set "TAILSCALE_ONLINE=%%b"
 )
 
@@ -111,13 +113,18 @@ if defined LAN_IP (
     echo     URL: http://!LAN_IP!:8501
 )
 echo.
-echo  Handy (Tailscale / Internet^):
-echo     IP:  !TAILSCALE_IP!
-if defined TAILSCALE_DNS (
-    echo     URL: http://!TAILSCALE_DNS!:8501
-) else (
-    echo     URL: http://!TAILSCALE_IP!:8501
+echo  Handy (von zuhause / unterwegs^):
+if defined TAILSCALE_HTTPS (
+    echo     URL ^(MagicDNS^): !TAILSCALE_HTTPS!
 )
+echo     URL ^(Fallback^):   http://!TAILSCALE_IP!:8501
+echo     ^(Fallback nutzen wenn Handy "Adresse nicht gefunden" meldet^)
+echo.
+echo  Android-Fix DNS: Einstellungen - Netzwerk - Privates DNS - AUS
+echo  ^(Privates DNS "Automatisch" blockiert MagicDNS^)
+echo.
+echo  WICHTIG: LAN-IP ^(!LAN_IP!^) nur im gleichen Buero/WLAN, NICHT von zuhause!
+echo            Tailscale-App muss "Verbunden" sein, bevor der Browser startet.
 echo.
 echo  Hinweis: Das minimierte Fenster "DigiWiki-Streamlit" haelt den Server.
 echo  Diese Zugangsdaten stehen auch in: digiwiki_zugang.txt
@@ -131,11 +138,11 @@ REM --- Zugangsdaten in Datei sichern (bleibt verfuegbar, auch nachdem dieses Fe
     echo.
     echo PC ^(lokal^):         http://localhost:8501
     if defined LAN_IP echo PC ^(WLAN/Netzwerk^): http://!LAN_IP!:8501  ^(IP: !LAN_IP!^)
-    if defined TAILSCALE_DNS (
-        echo Handy ^(Internet^):   http://!TAILSCALE_DNS!:8501  ^(IP: !TAILSCALE_IP!^)
-    ) else (
-        echo Handy ^(Internet^):   http://!TAILSCALE_IP!:8501  ^(IP: !TAILSCALE_IP!^)
-    )
+    if defined TAILSCALE_HTTPS echo Handy ^(MagicDNS^):     !TAILSCALE_HTTPS!
+    echo Handy ^(Fallback^):   http://!TAILSCALE_IP!:8501
+    echo.
+    echo Android: Privates DNS AUS ^(sonst "Adresse nicht gefunden"^)
+    echo LAN-IP nur im gleichen WLAN, nicht von zuhause.
 ) > "%ROOT%digiwiki_zugang.txt"
 
 echo [INFO] Dieses Fenster schliesst sich in 15 Sekunden automatisch ...

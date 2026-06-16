@@ -82,6 +82,10 @@ if "ne_mail_suchbegriff" not in st.session_state:
     st.session_state.ne_mail_suchbegriff = ""
 if "ne_mail_kontakt_key" not in st.session_state:
     st.session_state.ne_mail_kontakt_key = None
+if "kontakt_historie" not in st.session_state:
+    st.session_state.kontakt_historie = []
+if "letzter_kontakt" not in st.session_state:
+    st.session_state.letzter_kontakt = ""
 import re
 import os
 import io
@@ -113,6 +117,12 @@ from config import (
     liste_wissensbereiche,
 )
 from ask_wiki import frage_das_wiki
+from sql_frage_katalog import (
+    baue_klassifikator_leitfaden,
+    baue_sql_feld_leitfaden,
+    baue_semantik_leitfaden,
+    ist_offensichtliche_wiki_frage,
+)
 
 load_dotenv()
 
@@ -538,17 +548,38 @@ def lade_whitelist():
 # ==========================================
 # 3. KI LOGIK (NL2SQL & Sprach-Router)
 # ==========================================
-def analysiere_sprachkommando(kommando_text):
-    """Weist den Freitext einer von vier Aktionen (Anruf, Notiz, SQL, Wissen) zu."""
+def analysiere_sprachkommando(kommando_text, letzter_kontakt=""):
+    """Weist den Freitext einer von vier Aktionen (Anruf, Notiz, SQL, Wissen) zu.
+
+    letzter_kontakt: zuletzt gesuchte Person/Firma, um Anschlussbefehle mit Bezug
+    ('ruf ihn an', 'seine Nummer') aufzuloesen.
+    """
     client = OpenAI()
+    kontext_zeile = (
+        f"\n    ZULETZT GENANNTER KONTAKT: \"{letzter_kontakt}\".\n"
+        "    Wenn der Befehl keinen eigenen Namen nennt, sich aber per Bezug (er/sie/ihn/ihm/seine/ihre/dem)\n"
+        "    auf eine Person bezieht, dann verwende diesen zuletzt genannten Kontakt als ziel_name bzw. im text_inhalt.\n"
+        if str(letzter_kontakt or "").strip()
+        else ""
+    )
     prompt = f"""
     Analysiere den folgenden Befehl und ordne ihn in eine dieser vier Kategorien ein:
     1. 'anruf': Der Nutzer möchte jemanden anrufen (Name extrahieren).
     2. 'notiz': Der Nutzer möchte sich etwas notieren/merken (Inhalt extrahieren).
-    3. 'datenbank': Eine strukturierte Abfrage an die Firmen-/CRM-Datenbank (Microsoft Access/SQL),
-       z.B. konkrete Kontaktdaten, Adresslisten, Anzahlen, Felder oder Tabelleninhalte.
-    4. 'wissen': Eine allgemeine Wissens- oder Inhaltsfrage zu Dokumenten, Verfahren, Verträgen,
-       Formularen oder Firmenwissen. Dies ist der STANDARDFALL, wenn nichts anderes eindeutig passt.
+    3. 'datenbank': Strukturierte Abfrage an die CRM-/Marktdatenbank (Microsoft Access/SQL).
+       Das ist der STANDARDFALL fuer fast alle Fragen. Beispiele:
+       - Personen, Kontakte, Hierarchien, Telefon, E-Mail (crm_personen, ref_funktionen)
+       - Firmen, Adressen, Standorte (stammdatenindustrie)
+       - Apotheken (stammdatenapo)
+       - Produkte, Artikel, Hersteller, Sortiment (abdaartikel, topprodukte, gl_produkt1-3)
+       - Marktbearbeitung, Segmente, Akquise (akquiseklasse, Marktzielgruppe, emarktzielgruppe, Kategorie)
+       - Listen, Anzahlen, Rankings, Vergleiche
+       - CRM-Aktivitaeten, LinkedIn, Whitelist
+       - Auch qualitative Firmenfelder in der DB: narrativ, purpose, trigger_events, zielsetzung
+    4. 'wissen': NUR wenn die Antwort in Dokumenten/Vertraegen/Verfahren/Formularen liegt
+       und NICHT aus Tabellenfeldern beantwortbar ist.
+{kontext_zeile}
+    {baue_klassifikator_leitfaden()}
 
     Antworte AUSSCHLIESSLICH im JSON-Format:
     {{"kategorie": "anruf" | "notiz" | "datenbank" | "wissen", "ziel_name": "Name der Person falls Anruf, sonst leer", "text_inhalt": "Notiztext oder Frage"}}
@@ -564,7 +595,7 @@ def analysiere_sprachkommando(kommando_text):
         )
         return json.loads(response.choices[0].message.content)
     except Exception:
-        return {"kategorie": "wissen", "text_inhalt": kommando_text}
+        return {"kategorie": "datenbank", "text_inhalt": kommando_text}
 
 def baue_chat_historie_text(historie, max_eintraege=10):
     """Baut aus der Chat-Historie einen Verlaufstext (Nutzer/Assistenz) fuer das RAG."""
@@ -575,6 +606,43 @@ def baue_chat_historie_text(historie, max_eintraege=10):
         if text:
             zeilen.append(f"{rolle}: {text}")
     return "\n".join(zeilen)
+
+
+def klassifiziere_chat_frage(frage):
+    """Auto-Routing: SQL (strukturierte Daten) vs. Wiki-RAG (Dokumentenwissen)."""
+    if ist_offensichtliche_wiki_frage(frage):
+        return "wissen"
+    client = OpenAI()
+    prompt = f"""
+    Ordne die Nutzerfrage einem Antwortweg zu: 'datenbank' (SQL) oder 'wissen' (Wiki-Dokumente).
+
+    {baue_klassifikator_leitfaden()}
+
+    Antworte AUSSCHLIESSLICH als JSON: {{"typ": "datenbank" | "wissen", "begruendung": "kurz"}}
+    Im Zweifel: "datenbank".
+
+    Frage: "{frage}"
+    """
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.0,
+            response_format={"type": "json_object"},
+        )
+        typ = json.loads(response.choices[0].message.content).get("typ", "datenbank")
+        return typ if typ in ("datenbank", "wissen") else "datenbank"
+    except Exception:
+        return "datenbank"
+
+
+def ermittle_frage_typ(frage, modus, expliziter_typ=None):
+    """Bestimmt den Antwortpfad: manueller Modus, Router-Typ oder Auto-Klassifikation."""
+    if expliziter_typ in ("datenbank", "wissen"):
+        return expliziter_typ
+    if modus in ("datenbank", "wissen"):
+        return modus
+    return klassifiziere_chat_frage(frage)
 
 
 def uebersetze_frage_in_sql(nutzer_frage, schema_text, dictionary_csv):
@@ -588,13 +656,32 @@ def uebersetze_frage_in_sql(nutzer_frage, schema_text, dictionary_csv):
     
     === DATA DICTIONARY ===
     {dictionary_csv}
+
+    {baue_sql_feld_leitfaden()}
+
+    {baue_semantik_leitfaden()}
     
     === STRIKTE REGELN ===
     1. Antworte AUSSCHLIESSLICH mit dem SQL-Code in EINER Zeile.
-    2. Nutze für Textsuchen IMMER '%'.
-    3. SEMANTISCHE TEXTSUCHE: Generiere Synonyme und nutze OR.
-    4. PERSONEN: Nutze zwingend 'crm_personen' und INNER JOIN über 'kundennumm'.
-    5. Entferne Markdown.
+    2. Erkenne zuerst den Fragentyp (Leitfaden oben), waehle Tabellen/Felder/JOINs danach.
+    3. Nutze fuer Textsuchen IMMER LIKE mit '%'. Spalten mit [SUCH FELD] im Dictionary bevorzugen.
+    4. SEMANTISCHE TEXTSUCHE: Synonyme per OR (z.B. Hustensaft -> Husten, Hustensaft, Hustenstiller).
+    5. PERSONEN/HIERARCHIE: crm_personen JOIN stammdatenindustrie ON kundennumm;
+       optional ref_funktionen ON funktionid fuer ebene/funktionsbezeichnung.
+    6. FIRMEN/ADRESSEN: stammdatenindustrie – nama, nameb, kurzname, ort, plz, LKZ.
+    7. APOTHEKEN: stammdatenapo.
+    8. PRODUKTE/HERSTELLER: abdaartikel JOIN stammdatenindustrie ON anbieter_nr = anbieternummer;
+       Produktsuche in artikelname, artikelname_hauptbegriff, wirkstegrl, abdawarengruppe.
+    9. TOPPRODUKTE/SORTIMENT: stammdatenindustrie – gl_produkt1-3, topprodukte, top_produkte,
+       sortiment, anzahlabda, anzahlrx, produktschwerpunkt.
+    10. MARKTBEARBEITUNG: akquiseklasse (int, =), Marktzielgruppe, emarktzielgruppe,
+        funktion, Kategorie, hauptgruppe, ugruppe, d2p_score, veredelung_score.
+        Apotheken-Fokus / Marktorientierung → Marktzielgruppe + emarktzielgruppe LIKE '%Apothek%',
+        NICHT apotheken_fokus (Feld leer).
+    11. WHITELIST/LINKEDIN/CRM: passende Tabellen laut Leitfaden.
+    12. SELECT nur noetige Spalten; bei JOINs kein SELECT *.
+    13. Access: SELECT TOP 50 bei Listen; GROUP BY statt DISTINCT+ORDER BY Alias.
+    14. Entferne Markdown.
     """
     try:
         response = client.chat.completions.create(
@@ -1088,6 +1175,84 @@ def transkribiere_audio(audio_bytes):
     except Exception as e:
         return None, f"Diktat-Fehler: {e}"
 
+
+def diktat_popover(ziel_key, popover_label="🎤", hinweis="Aufnehmen – der Text wird ins Feld übernommen:"):
+    """Kompakter Mikro-Button (Popover), der erkannten Text an session_state[ziel_key] anhaengt.
+
+    WICHTIG:
+    - Muss im Code VOR dem zugehoerigen Eingabe-Widget stehen, da wir session_state[ziel_key]
+      sonst nicht mehr setzen duerfen (Streamlit verbietet das nach Widget-Instanzierung).
+    - Darf NICHT innerhalb eines st.form stehen (audio_input wuerde erst beim Submit ausloesen).
+    """
+    if not hasattr(st, "audio_input"):
+        return
+    run_key = f"_mic_run_{ziel_key}"
+    sig_key = f"_mic_sig_{ziel_key}"
+    behaelter = st.popover(popover_label) if hasattr(st, "popover") else st.expander(popover_label)
+    with behaelter:
+        audio = st.audio_input(
+            hinweis,
+            key=f"_mic_audio_{ziel_key}_{st.session_state.get(run_key, 0)}",
+            label_visibility="collapsed",
+        )
+        if audio is not None:
+            audio_bytes = audio.getvalue()
+            signatur = hashlib.md5(audio_bytes).hexdigest()
+            if st.session_state.get(sig_key) != signatur:
+                st.session_state[sig_key] = signatur
+                with st.spinner("Verarbeite Sprache ..."):
+                    text, fehler = transkribiere_audio(audio_bytes)
+                if fehler:
+                    st.warning(fehler)
+                elif text:
+                    bestehend = str(st.session_state.get(ziel_key, "") or "")
+                    st.session_state[ziel_key] = f"{bestehend} {text}".strip() if bestehend else text
+                    st.session_state[run_key] = st.session_state.get(run_key, 0) + 1
+                    st.session_state[sig_key] = None
+                    st.rerun()
+
+
+def feld_mit_mikro(ziel_key, render_widget, mic_label="🎤"):
+    """Rendert ein Eingabe-Widget (per render_widget mit key=ziel_key) mit Mikro-Button daneben.
+
+    render_widget: callable ohne Argumente, erzeugt das Widget und gibt dessen Wert zurueck.
+    Nicht innerhalb von st.form verwenden (siehe diktat_popover).
+    """
+    spalte_feld, spalte_mic = st.columns([0.88, 0.12])
+    with spalte_mic:
+        diktat_popover(ziel_key, popover_label=mic_label)
+    with spalte_feld:
+        return render_widget()
+
+
+def merke_kontakt_keyword(begriff):
+    """Merkt einen Such-/Kontaktbegriff fuer Vorschlaege und Anschlussfragen."""
+    begriff = str(begriff or "").strip()
+    if not begriff:
+        return
+    st.session_state.letzter_kontakt = begriff
+    historie = [b for b in st.session_state.get("kontakt_historie", []) if b.lower() != begriff.lower()]
+    historie.insert(0, begriff)
+    st.session_state.kontakt_historie = historie[:8]
+
+
+def zeige_kontakt_historie(ziel_key, prefix):
+    """Zeigt die letzten Suchbegriffe als Buttons; ein Klick fuellt das Feld ziel_key.
+
+    Muss im Code VOR dem zugehoerigen Feld stehen (setzt session_state[ziel_key]).
+    """
+    historie = st.session_state.get("kontakt_historie", [])
+    if not historie:
+        return
+    st.caption("Zuletzt verwendet:")
+    spalten = st.columns(min(len(historie), 4))
+    for i, begriff in enumerate(historie[:4]):
+        with spalten[i]:
+            if st.button(begriff, key=f"{prefix}_{i}", use_container_width=True):
+                st.session_state[ziel_key] = begriff
+                st.rerun()
+
+
 if hasattr(st, "audio_input"):
     with st.expander("🎤 Diktat aufnehmen (für Desktop ohne Tastatur-Mikro)"):
         audio_value = st.audio_input(
@@ -1139,11 +1304,16 @@ if st.session_state.pending_global_cmd:
     cmd_text = st.session_state.pending_global_cmd
     st.session_state.pending_global_cmd = None
     with st.spinner("Analysiere Kommando..."):
-        analyse = analysiere_sprachkommando(cmd_text)
+        analyse = analysiere_sprachkommando(cmd_text, st.session_state.get("letzter_kontakt", ""))
         kategorie = analyse.get("kategorie", "datenbank")
 
         if kategorie == "anruf":
-            such_name = analyse.get("ziel_name", "")
+            such_name = (analyse.get("ziel_name", "") or "").strip()
+            # Anschlussbefehl ohne expliziten Namen ("ruf ihn an") -> letzten Kontakt nutzen.
+            if not such_name:
+                such_name = st.session_state.get("letzter_kontakt", "")
+            if such_name:
+                merke_kontakt_keyword(such_name)
             st.session_state.router_state = {
                 "kategorie": "anruf",
                 "such_name": such_name,
@@ -1249,6 +1419,7 @@ haupttab = st.radio(
 # --- REITER 1: CHAT ---
 if haupttab == "chat":
     _chat_modus_labels = {
+        "auto": "🎯 Auto (SQL → Wiki)",
         "wissen": "🧠 Wiki-Wissen",
         "datenbank": "🗄️ Datenbank (SQL)",
     }
@@ -1262,7 +1433,7 @@ if haupttab == "chat":
             key="chat_modus",
         )
     with col_bereich:
-        if chat_modus == "wissen":
+        if chat_modus in ("wissen", "auto"):
             wiki_bereich = st.selectbox(
                 "Wissensbereich",
                 options=liste_wissensbereiche(),
@@ -1271,30 +1442,55 @@ if haupttab == "chat":
         else:
             wiki_bereich = None
 
+    # Sprach-Eingabe (Diktat) als Alternative zum Chat-Feld unten.
+    if st.session_state.pop("_clear_chat_voice", False):
+        st.session_state["chat_voice_text"] = ""
+    sp_mic, sp_txt, sp_btn = st.columns([0.12, 0.73, 0.15])
+    with sp_mic:
+        diktat_popover("chat_voice_text")
+    with sp_txt:
+        st.text_input(
+            "Sprach-Eingabe",
+            key="chat_voice_text",
+            label_visibility="collapsed",
+            placeholder="🎤 diktieren oder tippen, dann 'Fragen'",
+        )
+    with sp_btn:
+        chat_voice_senden = st.button("Fragen", use_container_width=True)
+
     for r in st.session_state.chat_historie:
         with st.chat_message(r["rolle"]): st.markdown(r["text"])
 
     eingabe_frage = st.chat_input("Frage ans Wiki oder die Datenbank...")
 
-    # Frage + Typ ermitteln: direkte Eingabe nutzt den gewaehlten Modus,
+    # Frage + Typ ermitteln: direkte Eingabe nutzt den gewaehlten Modus (auto = Klassifikation),
     # eine vom Sprach-Router uebergebene Frage bringt ihren eigenen Typ mit.
     frage = None
-    frage_typ = chat_modus
+    frage_modus = chat_modus
+    frage_typ_explizit = None
     if eingabe_frage:
         frage = eingabe_frage
-        frage_typ = chat_modus
+        frage_modus = chat_modus
+    elif chat_voice_senden and (st.session_state.get("chat_voice_text", "") or "").strip():
+        frage = st.session_state.get("chat_voice_text", "").strip()
+        frage_modus = chat_modus
+        st.session_state["_clear_chat_voice"] = True
     elif st.session_state.pending_chat_frage:
         pending = st.session_state.pending_chat_frage
         st.session_state.pending_chat_frage = None
         if isinstance(pending, dict):
             frage = pending.get("frage")
-            frage_typ = pending.get("typ", "wissen")
+            frage_typ_explizit = pending.get("typ")
+            frage_modus = "auto"
         else:
             frage = pending
-            frage_typ = "wissen"
+            frage_typ_explizit = "wissen"
+            frage_modus = "auto"
 
     if frage:
         historie_text = baue_chat_historie_text(st.session_state.chat_historie)
+        frage_typ = ermittle_frage_typ(frage, frage_modus, frage_typ_explizit)
+        wiki_fallback = frage_modus == "auto" and frage_typ == "datenbank"
 
         with st.chat_message("user"): st.markdown(frage)
         st.session_state.chat_historie.append({"rolle": "user", "text": frage})
@@ -1305,6 +1501,7 @@ if haupttab == "chat":
                     ergebnis = frage_das_wiki(frage, historie_text=historie_text, bereich=wiki_bereich)
                 antwort = ergebnis.get("antwort", "")
                 quellen = ergebnis.get("quellen", [])
+                st.caption("🧠 Antwort aus Wiki-Wissensbasis")
                 st.markdown(antwort)
                 if quellen:
                     st.caption("📚 Quellen: " + ", ".join(quellen))
@@ -1313,38 +1510,66 @@ if haupttab == "chat":
                     hist_text += "\n\n*📚 Quellen: " + ", ".join(quellen) + "*"
                 st.session_state.chat_historie.append({"rolle": "assistant", "text": hist_text})
             else:
+                sql_erfolg = False
                 with st.spinner("Durchsuche Datenbank..."):
                     try:
                         generiertes_sql = uebersetze_frage_in_sql(frage, db_schema, db_dictionary)
                         ergebnis = fuehre_sql_aus(generiertes_sql)
 
-                        if isinstance(ergebnis, pd.DataFrame):
-                            if ergebnis.empty:
-                                st.info("Keine Treffer gefunden.")
-                                st.session_state.chat_historie.append({"rolle": "assistant", "text": "Keine Treffer."})
-                            else:
-                                st.success(f"{len(ergebnis)} Datensätze gefunden:")
-                                st.dataframe(ergebnis, use_container_width=True)
-                                st.session_state.chat_historie.append({"rolle": "assistant", "text": f"Tabelle mit {len(ergebnis)} Zeilen generiert."})
+                        if isinstance(ergebnis, pd.DataFrame) and not ergebnis.empty:
+                            sql_erfolg = True
+                            st.caption("🗄️ Antwort aus Datenbank (SQL)")
+                            st.success(f"{len(ergebnis)} Datensätze gefunden:")
+                            st.dataframe(ergebnis, use_container_width=True)
+                            st.session_state.chat_historie.append({
+                                "rolle": "assistant",
+                                "text": f"🗄️ Tabelle mit {len(ergebnis)} Zeilen (SQL).",
+                            })
+                        elif isinstance(ergebnis, pd.DataFrame) and ergebnis.empty:
+                            if not wiki_fallback:
+                                st.info("Keine Treffer in der Datenbank.")
+                                st.session_state.chat_historie.append({"rolle": "assistant", "text": "Keine SQL-Treffer."})
                         else:
                             st.error(ergebnis)
                     except Exception as e:
                         st.error(f"❌ Fehler: {str(e)}")
 
+                if not sql_erfolg and wiki_fallback:
+                    st.caption("Keine SQL-Treffer – wechsle zur Wiki-Wissensbasis …")
+                    with st.spinner("Durchsuche die Wissensbasis..."):
+                        ergebnis = frage_das_wiki(frage, historie_text=historie_text, bereich=wiki_bereich)
+                    antwort = ergebnis.get("antwort", "")
+                    quellen = ergebnis.get("quellen", [])
+                    st.caption("🧠 Antwort aus Wiki-Wissensbasis (Fallback)")
+                    st.markdown(antwort)
+                    if quellen:
+                        st.caption("📚 Quellen: " + ", ".join(quellen))
+                    hist_text = antwort
+                    if quellen:
+                        hist_text += "\n\n*📚 Quellen: " + ", ".join(quellen) + "*"
+                    st.session_state.chat_historie.append({"rolle": "assistant", "text": hist_text})
+
 # --- REITER 2: MAILS & WHATSAPP ---
 elif haupttab == "mails":
     with st.expander("✉️ Neue E-Mail verfassen", expanded=False):
-        with st.form("form_ne_mail_suche", clear_on_submit=False):
-            ne_mail_eingabe = st.text_input(
+        zeige_kontakt_historie("ne_mail_such_input", "hist_ne_mail")
+        c_ne_mic, c_ne_feld, c_ne_btn = st.columns([0.12, 0.73, 0.15])
+        with c_ne_mic:
+            diktat_popover("ne_mail_such_input")
+        with c_ne_feld:
+            st.text_input(
                 "🔍 Empfänger suchen...",
-                value=st.session_state.ne_mail_suchbegriff,
+                key="ne_mail_such_input",
                 placeholder="Name oder Firma…",
+                label_visibility="collapsed",
             )
-            btn_ne_mail_suchen = st.form_submit_button("🔍 Suchen", use_container_width=True)
+        with c_ne_btn:
+            btn_ne_mail_suchen = st.button("🔍", key="btn_ne_mail_suchen", use_container_width=True)
 
         if btn_ne_mail_suchen:
-            st.session_state.ne_mail_suchbegriff = ne_mail_eingabe.strip()
+            st.session_state.ne_mail_suchbegriff = (st.session_state.get("ne_mail_such_input", "") or "").strip()
             st.session_state.ne_mail_kontakt_key = None
+            merke_kontakt_keyword(st.session_state.ne_mail_suchbegriff)
             _ne_mail_entwurf_zuruecksetzen()
 
         ne_suchbegriff = st.session_state.ne_mail_suchbegriff
@@ -1363,6 +1588,7 @@ elif haupttab == "mails":
                 label = f"📧 {name}" + (f" ({firma})" if firma else "") + ("" if optionen else " (keine E-Mail)")
                 if st.button(label, key=f"btn_ne_mail_{key}", disabled=not optionen):
                     st.session_state.ne_mail_kontakt_key = key
+                    merke_kontakt_keyword(name)
                     _ne_mail_entwurf_zuruecksetzen()
                     st.rerun()
 
@@ -1392,11 +1618,17 @@ elif haupttab == "mails":
                 email_labels = [o["label"] for o in email_optionen]
                 gewaehlte_label = st.radio("Empfänger-Adresse", email_labels, key="ne_mail_empf_adresse")
                 empfaenger_email = next(o["email"] for o in email_optionen if o["label"] == gewaehlte_label)
-                betreff = st.text_input("Betreff", key="ne_mail_betreff")
-                anweisung = st.text_area(
-                    "Worum geht es? (diktieren oder tippen)",
-                    placeholder="z.B. Terminvorschlag für nächste Woche…",
-                    key="ne_mail_anweisung",
+                betreff = feld_mit_mikro(
+                    "ne_mail_betreff",
+                    lambda: st.text_input("Betreff", key="ne_mail_betreff"),
+                )
+                anweisung = feld_mit_mikro(
+                    "ne_mail_anweisung",
+                    lambda: st.text_area(
+                        "Worum geht es? (diktieren oder tippen)",
+                        placeholder="z.B. Terminvorschlag für nächste Woche…",
+                        key="ne_mail_anweisung",
+                    ),
                 )
                 col_gen, col_close = st.columns(2)
                 with col_gen:
@@ -1417,10 +1649,13 @@ elif haupttab == "mails":
                         _ne_mail_entwurf_zuruecksetzen()
                         st.rerun()
 
-                entwurf = st.text_area(
-                    "Mail-Entwurf",
-                    height=220,
-                    key="ne_mail_entwurf_edit",
+                entwurf = feld_mit_mikro(
+                    "ne_mail_entwurf_edit",
+                    lambda: st.text_area(
+                        "Mail-Entwurf",
+                        height=220,
+                        key="ne_mail_entwurf_edit",
+                    ),
                 )
                 if str(entwurf or "").startswith("Fehler bei der KI-Generierung:"):
                     st.error(entwurf)
@@ -1442,17 +1677,24 @@ elif haupttab == "mails":
                         st.rerun()
 
     with st.expander("📱 Manuelle WhatsApp senden"):
-        with st.form("form_wa_suche", clear_on_submit=False):
-            wa_eingabe = st.text_input(
+        zeige_kontakt_historie("wa_such_input", "hist_wa")
+        c_wa_mic, c_wa_feld, c_wa_btn = st.columns([0.12, 0.73, 0.15])
+        with c_wa_mic:
+            diktat_popover("wa_such_input")
+        with c_wa_feld:
+            st.text_input(
                 "🔍 Kontakt suchen...",
-                value=st.session_state.wa_suchbegriff,
+                key="wa_such_input",
                 placeholder="Name oder Firma…",
+                label_visibility="collapsed",
             )
-            btn_wa_suchen = st.form_submit_button("🔍 Suchen", use_container_width=True)
+        with c_wa_btn:
+            btn_wa_suchen = st.button("🔍", key="btn_wa_suchen", use_container_width=True)
 
         if btn_wa_suchen:
-            st.session_state.wa_suchbegriff = wa_eingabe.strip()
+            st.session_state.wa_suchbegriff = (st.session_state.get("wa_such_input", "") or "").strip()
             st.session_state.wa_selected_id = None
+            merke_kontakt_keyword(st.session_state.wa_suchbegriff)
 
         suchbegriff = st.session_state.wa_suchbegriff
         df_anzeige = suche_whatsapp_kontakte(suchbegriff) if suchbegriff else pd.DataFrame()
@@ -1473,6 +1715,7 @@ elif haupttab == "mails":
                     btn_label = f"💬 {name}" + (f" ({firma})" if firma else "")
                     if st.button(btn_label, key=f"btn_wa_{personid}"):
                         st.session_state.wa_selected_id = personid
+                        merke_kontakt_keyword(name)
                         st.rerun()
 
         if st.session_state.wa_selected_id and not df_anzeige.empty:
@@ -1525,14 +1768,20 @@ elif haupttab == "mails":
             for i, mail in enumerate(mails):
                 with st.expander(f"📧 {mail['Name']} | {mail['Betreff']}"):
                     st.text_area("Original-Mail", mail['Inhalt'], height=150, key=f"mail_text_{i}")
-                    anweisung = st.text_input("KI-Anweisung (diktieren!):", key=f"anweisung_{i}")
+                    anweisung = feld_mit_mikro(
+                        f"anweisung_{i}",
+                        lambda i=i: st.text_input("KI-Anweisung (diktieren!):", key=f"anweisung_{i}"),
+                    )
                     if st.button("✨ Entwurf generieren", key=f"btn_gen_{i}"):
                         st.session_state[f"edit_{i}"] = generiere_mail_entwurf(
                             mail["Inhalt"], anweisung, mail["Ansprache"], mail["Name"]
                         )
                         st.rerun()
                     if f"edit_{i}" in st.session_state:
-                        editierter_text = st.text_area("Entwurf:", height=200, key=f"edit_{i}")
+                        editierter_text = feld_mit_mikro(
+                            f"edit_{i}",
+                            lambda i=i: st.text_area("Entwurf:", height=200, key=f"edit_{i}"),
+                        )
                         if st.button("🚀 Senden", key=f"send_{i}"):
                             if sende_email_via_outlook(
                                 mail['Email'], mail['Betreff'], editierter_text, reply_absender, ist_antwort=True
@@ -1559,21 +1808,41 @@ elif haupttab == "agenda":
                     st.markdown(f"<div class='outlook-card'><b>📅 {t['Datum']} | {t['Zeit']} Uhr</b><br>{t['Betreff']}{ort_text}</div>", unsafe_allow_html=True)
 
     with col_task:
+        # Felder nach dem Speichern leeren (vor Widget-Erstellung, da sonst nicht erlaubt).
+        if st.session_state.pop("_clear_notiz", False):
+            st.session_state["agenda_notiz_text"] = ""
+        if st.session_state.pop("_clear_aufgabe", False):
+            st.session_state["agenda_aufgabe_text"] = ""
+
         st.markdown("#### 🎯 Aufgaben & Notizen")
         with st.expander("📝 Neue Notiz (manuell)"):
-            with st.form("form_notiz", clear_on_submit=True):
-                manuelle_notiz = st.text_area("Notiz diktieren:")
-                if st.form_submit_button("In Outlook speichern", use_container_width=True):
-                    erfolg, msg = erstelle_outlook_notiz(manuelle_notiz)
-                    if erfolg: st.success(msg)
-                    
-        with st.expander("➕ Neue Aufgabe"):
-            with st.form("form_aufgabe", clear_on_submit=True):
-                neu_betreff = st.text_input("Was ist zu tun?*")
-                neu_faellig = st.date_input("Fällig am", value=None)
-                if st.form_submit_button("Aufgabe anlegen", use_container_width=True):
-                    erstelle_outlook_aufgabe(neu_betreff, neu_faellig)
+            manuelle_notiz = feld_mit_mikro(
+                "agenda_notiz_text",
+                lambda: st.text_area("Notiz diktieren:", key="agenda_notiz_text"),
+            )
+            if st.button("In Outlook speichern", key="btn_notiz_speichern", use_container_width=True):
+                erfolg, msg = erstelle_outlook_notiz(manuelle_notiz)
+                if erfolg:
+                    st.session_state["_clear_notiz"] = True
+                    if hasattr(st, "toast"):
+                        st.toast(f"✅ {msg}")
                     st.rerun()
+                else:
+                    st.error(msg)
+
+        with st.expander("➕ Neue Aufgabe"):
+            neu_betreff = feld_mit_mikro(
+                "agenda_aufgabe_text",
+                lambda: st.text_input("Was ist zu tun?*", key="agenda_aufgabe_text"),
+            )
+            neu_faellig = st.date_input("Fällig am", value=None, key="agenda_aufgabe_faellig")
+            if st.button("Aufgabe anlegen", key="btn_aufgabe_anlegen", use_container_width=True):
+                if str(neu_betreff or "").strip():
+                    erstelle_outlook_aufgabe(neu_betreff, neu_faellig)
+                    st.session_state["_clear_aufgabe"] = True
+                    st.rerun()
+                else:
+                    st.warning("Bitte zuerst eingeben, was zu tun ist.")
 
         if outlook_daten and outlook_daten["aufgaben"]:
             for a in outlook_daten["aufgaben"]:
