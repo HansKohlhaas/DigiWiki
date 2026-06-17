@@ -1,0 +1,16 @@
+Von_Tabelle;Von_Spalte;Nach_Tabelle;Nach_Spalte;Kardinalitaet;Beschreibung;SQL_JOIN
+crm_personen;kundennumm;stammdatenindustrie;kundennumm;N:1;Person gehoert zu Firma;INNER JOIN stammdatenindustrie AS s ON crm_personen.kundennumm = s.kundennumm
+crm_personen;funktionid;ref_funktionen;funktionid;N:1;Person hat Hierarchie/Funktion;LEFT JOIN ref_funktionen AS rf ON crm_personen.funktionid = rf.funktionid
+crm_personen;linkedin_canonical_url;Connections;canonical_url;N:1;Person zu LinkedIn Profil;LEFT JOIN Connections AS c ON crm_personen.linkedin_canonical_url = c.canonical_url
+crm_aktivitaeten;personid;crm_personen;personid;N:1;Aktivitaet zu Person;INNER JOIN crm_personen AS p ON CStr(crm_aktivitaeten.personid) = p.personid
+crm_aktivitaeten;personurl;Connections;canonical_url;N:1;Aktivitaet zu LinkedIn URL;LEFT JOIN Connections AS c ON crm_aktivitaeten.personurl = c.canonical_url
+crm_firmen_aktivitaeten;kundennumm;stammdatenindustrie;kundennumm;N:1;Firmenaktivitaet zu Firma;INNER JOIN stammdatenindustrie AS s ON CStr(crm_firmen_aktivitaeten.kundennumm) = s.kundennumm
+crm_firmen_trigger_historie;kundennumm;stammdatenindustrie;kundennumm;N:1;Trigger-Historie zu Firma;INNER JOIN stammdatenindustrie AS s ON CStr(crm_firmen_trigger_historie.kundennumm) = s.kundennumm
+abdaartikel;anbieter_nr;stammdatenindustrie;anbieternummer;N:1;Artikel zu Hersteller/Anbieter;INNER JOIN stammdatenindustrie AS s ON abdaartikel.anbieter_nr = s.anbieternummer
+Whitelist_Kontakte;indkundennumm;stammdatenindustrie;kundennumm;N:1;Whitelist zu Industrie-Firma;LEFT JOIN stammdatenindustrie AS s ON Whitelist_Kontakte.indkundennumm = s.kundennumm
+Whitelist_Kontakte;apokundennumm;stammdatenapo;kundennumm;N:1;Whitelist zu Apotheke;LEFT JOIN stammdatenapo AS a ON Whitelist_Kontakte.apokundennumm = a.kundennumm
+Whitelist_Kontakte;indpersonid;crm_personen;personid;N:1;Whitelist zu Person;LEFT JOIN crm_personen AS p ON Whitelist_Kontakte.indpersonid = p.personid
+Invitations_Normalized;personurl;crm_personen;linkedin_canonical_url;N:1;Einladung zu Person;LEFT JOIN crm_personen AS p ON Invitations_Normalized.personurl = p.linkedin_canonical_url
+Invitations_Normalized;inviter_canonical_url;Connections;canonical_url;N:1;Einladung Einlader Profil;LEFT JOIN Connections AS c ON Invitations_Normalized.inviter_canonical_url = c.canonical_url
+Datei_Index;Kundennummer_Ref;stammdatenapo;kundennumm;N:1;Datei zu Apotheke;LEFT JOIN stammdatenapo AS a ON Datei_Index.Kundennummer_Ref = a.kundennumm
+Datei_Index;Anbieter_ID;stammdatenindustrie;kundennumm;N:1;Datei zu Industrie-Firma (Anbieter_ID=kundennumm);LEFT JOIN stammdatenindustrie AS s ON Datei_Index.Anbieter_ID = s.kundennumm

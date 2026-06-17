@@ -123,6 +123,7 @@ from sql_frage_katalog import (
     baue_semantik_leitfaden,
     ist_offensichtliche_wiki_frage,
 )
+from sql_db_meta import baue_db_meta_leitfaden
 
 load_dotenv()
 
@@ -657,31 +658,25 @@ def uebersetze_frage_in_sql(nutzer_frage, schema_text, dictionary_csv):
     === DATA DICTIONARY ===
     {dictionary_csv}
 
+    {baue_db_meta_leitfaden()}
+
     {baue_sql_feld_leitfaden()}
 
     {baue_semantik_leitfaden()}
     
     === STRIKTE REGELN ===
     1. Antworte AUSSCHLIESSLICH mit dem SQL-Code in EINER Zeile.
-    2. Erkenne zuerst den Fragentyp (Leitfaden oben), waehle Tabellen/Felder/JOINs danach.
+    2. Schritt 1: Tabellenrolle aus db_tabellen waehlen. Schritt 2: JOINs aus db_joins.
+       Schritt 3: Felder/Synonyme aus Dictionary und semantischem Leitfaden.
     3. Nutze fuer Textsuchen IMMER LIKE mit '%'. Spalten mit [SUCH FELD] im Dictionary bevorzugen.
     4. SEMANTISCHE TEXTSUCHE: Synonyme per OR (z.B. Hustensaft -> Husten, Hustensaft, Hustenstiller).
-    5. PERSONEN/HIERARCHIE: crm_personen JOIN stammdatenindustrie ON kundennumm;
-       optional ref_funktionen ON funktionid fuer ebene/funktionsbezeichnung.
-    6. FIRMEN/ADRESSEN: stammdatenindustrie – nama, nameb, kurzname, ort, plz, LKZ.
-    7. APOTHEKEN: stammdatenapo.
-    8. PRODUKTE/HERSTELLER: abdaartikel JOIN stammdatenindustrie ON anbieter_nr = anbieternummer;
-       Produktsuche in artikelname, artikelname_hauptbegriff, wirkstegrl, abdawarengruppe.
-    9. TOPPRODUKTE/SORTIMENT: stammdatenindustrie – gl_produkt1-3, topprodukte, top_produkte,
-       sortiment, anzahlabda, anzahlrx, produktschwerpunkt.
-    10. MARKTBEARBEITUNG: akquiseklasse (int, =), Marktzielgruppe, emarktzielgruppe,
-        funktion, Kategorie, hauptgruppe, ugruppe, d2p_score, veredelung_score.
-        Apotheken-Fokus / Marktorientierung → Marktzielgruppe + emarktzielgruppe LIKE '%Apothek%',
+    5. JOINs nur aus db_joins.csv verwenden; bei Typ-Unterschied kundennumm/personid CStr() nutzen.
+    6. MARKTBEARBEITUNG: akquiseklasse (int, =), Marktzielgruppe, emarktzielgruppe.
+        Apotheken-Fokus/Marktorientierung -> Marktzielgruppe/emarktzielgruppe LIKE '%Apothek%',
         NICHT apotheken_fokus (Feld leer).
-    11. WHITELIST/LINKEDIN/CRM: passende Tabellen laut Leitfaden.
-    12. SELECT nur noetige Spalten; bei JOINs kein SELECT *.
-    13. Access: SELECT TOP 50 bei Listen; GROUP BY statt DISTINCT+ORDER BY Alias.
-    14. Entferne Markdown.
+    7. SELECT nur noetige Spalten; bei JOINs kein SELECT *.
+    8. Access: SELECT TOP 50 bei Listen; GROUP BY statt DISTINCT+ORDER BY Alias.
+    9. Entferne Markdown.
     """
     try:
         response = client.chat.completions.create(

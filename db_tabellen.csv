@@ -1,0 +1,13 @@
+Tabelle;Rolle;Primaerschluessel;Ist_Hub;Beschreibung;Typische_Fragentypen
+stammdatenindustrie;Firmenstamm Industrie/Hersteller;kundennumm;ja;Zentrale Firmendaten Pharma/Industrie: Adresse Marktsegment Sortiment Narrativ;Firmenliste Adresse Marktsegment Akquise Topprodukte Narrativ D2P
+crm_personen;Ansprechpartner Personen;personid;nein;Kontakte mit Telefon Email Funktion Hierarchie pro Firma;Wer ist Ansprechpartner Telefon Email GF Hierarchie
+ref_funktionen;Hierarchie Referenz;funktionid;nein;Funktionsebenen z.B. GF Leiter;Hierarchie Position Ebene
+abdaartikel;Produktkatalog ABDA;pzn;nein;Artikel PZN Wirkstoff Warengruppe je Anbieter;Wer stellt Produkt her Artikelliste PZN Warengruppe Rx OTC
+stammdatenapo;Apothekenstamm;kundennumm;nein;Apotheken Adresse Groesse Gruppe Bundesland;Apothekenliste Apothekengruppe PLZ Region
+Whitelist_Kontakte;Freigegebene Kontakte;ID;nein;Kuratierte Kontakte mit Prioritaet Ansprache Verknuepfung Industrie/Apo/Person;Whitelist Prioritaet freigegebene Kontakte
+crm_aktivitaeten;LinkedIn Aktivitaeten Person;aktivitaetid;nein;Posts Likes Kommentare Touchpoints je Person;LinkedIn Aktivitaet letztes Like Touchpoint
+crm_firmen_aktivitaeten;LinkedIn Aktivitaeten Firma;activityid;nein;Firmenposts und Status;Firmenaktivitaet LinkedIn Post
+crm_firmen_trigger_historie;Trigger Events Firma;historyid;nein;Ereignisse Plaene Veraenderungen je Firma;Trigger Event Historie
+Connections;LinkedIn Netzwerk;canonical_url;nein;LinkedIn Verbindungen Name Firma Position;LinkedIn Kontakte Verbindungsdatum
+Invitations_Normalized;LinkedIn Einladungen;invitationid;nein;Einladungen gesendet/empfangen;LinkedIn Einladung
+Datei_Index;Dokumentenindex;Datei_ID;nein;Verknuepfung Dateien zu Firma/Apotheke;Welche Dateien zu Firma X

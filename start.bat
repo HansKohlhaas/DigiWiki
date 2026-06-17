@@ -113,18 +113,14 @@ if defined LAN_IP (
     echo     URL: http://!LAN_IP!:8501
 )
 echo.
-echo  Handy (von zuhause / unterwegs^):
-if defined TAILSCALE_HTTPS (
-    echo     URL ^(MagicDNS^): !TAILSCALE_HTTPS!
-)
-echo     URL ^(Fallback^):   http://!TAILSCALE_IP!:8501
-echo     ^(Fallback nutzen wenn Handy "Adresse nicht gefunden" meldet^)
+echo  HANDY (von zuhause - NUR DIESE URL IM BROWSER^):
+echo     http://!TAILSCALE_IP!:8501
 echo.
-echo  Android-Fix DNS: Einstellungen - Netzwerk - Privates DNS - AUS
-echo  ^(Privates DNS "Automatisch" blockiert MagicDNS^)
+echo  NICHT die https://desktop-velbert... URL nutzen!
+echo  ERR_NAME_NOT_RESOLVED = falscher Hostname / MagicDNS kaputt
 echo.
-echo  WICHTIG: LAN-IP ^(!LAN_IP!^) nur im gleichen Buero/WLAN, NICHT von zuhause!
-echo            Tailscale-App muss "Verbunden" sein, bevor der Browser startet.
+echo  Vor dem Oeffnen: Tailscale-App = Verbunden (gruen)
+echo  Android: Privates DNS AUS, Akku-Optimierung Tailscale AUS
 echo.
 echo  Hinweis: Das minimierte Fenster "DigiWiki-Streamlit" haelt den Server.
 echo  Diese Zugangsdaten stehen auch in: digiwiki_zugang.txt
@@ -138,12 +134,26 @@ REM --- Zugangsdaten in Datei sichern (bleibt verfuegbar, auch nachdem dieses Fe
     echo.
     echo PC ^(lokal^):         http://localhost:8501
     if defined LAN_IP echo PC ^(WLAN/Netzwerk^): http://!LAN_IP!:8501  ^(IP: !LAN_IP!^)
-    if defined TAILSCALE_HTTPS echo Handy ^(MagicDNS^):     !TAILSCALE_HTTPS!
-    echo Handy ^(Fallback^):   http://!TAILSCALE_IP!:8501
+    echo HANDY - NUR DIESE URL ^(Lesezeichen^):
+    echo   http://!TAILSCALE_IP!:8501
     echo.
-    echo Android: Privates DNS AUS ^(sonst "Adresse nicht gefunden"^)
-    echo LAN-IP nur im gleichen WLAN, nicht von zuhause.
+    echo NICHT https://desktop-velbert... ^(MagicDNS, bricht alle 10 Min ab^)
+    echo ERR_NAME_NOT_RESOLVED = Hostname-URL benutzt, nicht IP!
+    echo.
+    echo Vorher: Tailscale-App verbunden. Privates DNS AUS.
+    if defined LAN_IP echo PC ^(WLAN^): http://!LAN_IP!:8501  ^(nur gleiches WLAN^)
 ) > "%ROOT%digiwiki_zugang.txt"
+
+REM --- Einfache HTML-Weiterleitung fuer Handy-Lesezeichen (ohne DNS) ---
+(
+    echo ^<!DOCTYPE html^>
+    echo ^<html^>^<head^>^<meta charset="utf-8"^>^<title^>DigiWiki^</title^>^</head^>
+    echo ^<body style="font-family:sans-serif;text-align:center;margin-top:3em"^>
+    echo ^<h2^>DigiWiki^</h2^>
+    echo ^<p^>^<a href="http://!TAILSCALE_IP!:8501" style="font-size:1.4em"^>App oeffnen^</a^>^</p^>
+    echo ^<p style="color:#666"^>Tailscale am Handy muss verbunden sein.^</p^>
+    echo ^</body^>^</html^>
+) > "%ROOT%digiwiki_handy.html"
 
 echo [INFO] Dieses Fenster schliesst sich in 15 Sekunden automatisch ...
 timeout /t 15 /nobreak >nul

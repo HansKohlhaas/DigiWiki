@@ -417,11 +417,7 @@ Schritt 4: SELECT nur relevante Ausgabefelder, nicht SELECT * bei JOINs.
 """ + "\n\n".join(bloecke) + """
 
 === GLOBALE JOIN-REGELN ===
-- Person + Firma: crm_personen INNER JOIN stammdatenindustrie ON kundennumm
-- Hierarchie: crm_personen LEFT JOIN ref_funktionen ON funktionid fuer ebene/funktionsbezeichnung
-- Produkt + Hersteller: abdaartikel INNER JOIN stammdatenindustrie ON anbieter_nr = anbieternummer
-- Whitelist: Whitelist_Kontakte JOIN stammdatenindustrie / crm_personen ueber indkundennumm / indpersonid
-- Deutschland: stammdatenindustrie.LKZ = 'D'
+Siehe db_joins.csv (vollstaendiger JOIN-Graph) und db_tabellen.csv (Tabellenrollen).
 
 """ + baue_semantik_leitfaden() + """
 
