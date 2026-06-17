@@ -110,6 +110,7 @@ from config import (
     MAIL_DOWNLOAD_DIR,
     MAIL_UPLOAD_DIR,
     SCHEMA_PATH,
+    SQL_DEFAULT_TOP,
     WHATSAPP_CLOUD_API_TOKEN,
     WHATSAPP_CLOUD_API_VERSION,
     WHATSAPP_DEFAULT_COUNTRY_CODE,
@@ -117,6 +118,7 @@ from config import (
     liste_wissensbereiche,
 )
 from ask_wiki import frage_das_wiki
+from brandvoice import BRANDVOICE_RADIO, brandvoice_auswahl_block, brandvoice_radio_labels
 from sql_frage_katalog import (
     baue_klassifikator_leitfaden,
     baue_sql_feld_leitfaden,
@@ -670,12 +672,15 @@ def uebersetze_frage_in_sql(nutzer_frage, schema_text, dictionary_csv):
        Schritt 3: Felder/Synonyme aus Dictionary und semantischem Leitfaden.
     3. Nutze fuer Textsuchen IMMER LIKE mit '%'. Spalten mit [SUCH FELD] im Dictionary bevorzugen.
     4. SEMANTISCHE TEXTSUCHE: Synonyme per OR (z.B. Hustensaft -> Husten, Hustensaft, Hustenstiller).
-    5. JOINs nur aus db_joins.csv verwenden; bei Typ-Unterschied kundennumm/personid CStr() nutzen.
+    5. JOINs nur aus db_joins.csv; bei Typ-Unterschied kundennumm/personid CStr() nutzen.
+       ACCESS-KLAMMERN: Bei INNER+LEFT gemischt IMMER Klammern (siehe ACCESS JOIN-SYNTAX).
+       GF-Beispiel: FROM (crm_personen AS p INNER JOIN stammdatenindustrie AS s ON p.kundennumm = s.kundennumm) LEFT JOIN ref_funktionen AS rf ON p.funktionid = rf.funktionid
     6. MARKTBEARBEITUNG: akquiseklasse (int, =), Marktzielgruppe, emarktzielgruppe.
         Apotheken-Fokus/Marktorientierung -> Marktzielgruppe/emarktzielgruppe LIKE '%Apothek%',
         NICHT apotheken_fokus (Feld leer).
     7. SELECT nur noetige Spalten; bei JOINs kein SELECT *.
-    8. Access: SELECT TOP 50 bei Listen; GROUP BY statt DISTINCT+ORDER BY Alias.
+    8. Access: SELECT TOP {SQL_DEFAULT_TOP} bei Listen (Standard, env: DIGIWIKI_SQL_DEFAULT_TOP);
+       explizites Nutzer-Limit (z.B. Top 10) hat Vorrang. GROUP BY statt DISTINCT+ORDER BY Alias.
     9. Entferne Markdown.
     """
     try:
@@ -1056,36 +1061,37 @@ def hole_relevante_emails(whitelist_df):
             except: pass
     return relevante_mails
 
-def generiere_mail_entwurf(original_text, anweisung, ansprache, absender_name):
+def generiere_mail_entwurf(original_text, anweisung, ansprache, absender_name, brandvoice_wahl="ohne"):
     client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
     ansprache = _ansprache_aus_kontakt({"ansprache": ansprache})
     stil = "vertrauliche Du-Anrede" if ansprache == "Du" else "höfliche Sie-Anrede"
     prompt = (
-        f"Du bist Hans Kohlhaas, Geschäftsführer von DigiBest. Antworte auf: {original_text}\n"
+        f"Du schreibst im Namen von Hans Kohlhaas / DigiBest.\n"
+        f"{brandvoice_auswahl_block(brandvoice_wahl)}\n"
+        f"Antworte auf diese E-Mail:\n{original_text}\n\n"
         f"Partner: {absender_name}\n"
         f"Anrede-Stil: Verwende konsequent die {ansprache}-Form ({stil}).\n"
-        f"Ton: Klar, respektvoll-direkt.\n"
-        f"Anweisung: {anweisung}\n"
-        f"Schreibe NUR den reinen Mail-Text."
+        f"Anweisung des Nutzers: {anweisung}\n"
+        f"Schreibe NUR den reinen Mail-Text inkl. Anrede und Grußformel."
     )
     try:
         return client.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": prompt}], temperature=0.4).choices[0].message.content
     except Exception as e: return f"Fehler bei der KI-Generierung: {e}"
 
 
-def generiere_neue_mail_entwurf(anweisung, ansprache, empfaenger_name, betreff=""):
+def generiere_neue_mail_entwurf(anweisung, ansprache, empfaenger_name, betreff="", brandvoice_wahl="ohne"):
     client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
     ansprache = _ansprache_aus_kontakt({"ansprache": ansprache})
     stil = "vertrauliche Du-Anrede" if ansprache == "Du" else "höfliche Sie-Anrede"
     prompt = (
-        f"Du bist Hans Kohlhaas, Geschäftsführer von DigiBest. "
+        f"Du schreibst im Namen von Hans Kohlhaas / DigiBest.\n"
+        f"{brandvoice_auswahl_block(brandvoice_wahl)}\n"
         f"Schreibe eine NEUE E-Mail (keine Antwort auf eine bestehende Mail).\n"
         f"Empfänger: {empfaenger_name}\n"
         f"Anrede-Stil: Verwende konsequent die {ansprache}-Form ({stil}). "
         f"Anrede, Text und Grußformel müssen durchgängig {ansprache} sein.\n"
         f"Betreff-Vorgabe: {betreff or '(noch offen)'}\n"
         f"Worum geht es: {anweisung}\n"
-        f"Ton: Klar, respektvoll-direkt.\n"
         f"Schreibe NUR den reinen Mail-Text inkl. Anrede und Grußformel."
     )
     try:
@@ -1094,6 +1100,40 @@ def generiere_neue_mail_entwurf(anweisung, ansprache, empfaenger_name, betreff="
         ).choices[0].message.content
     except Exception as e:
         return f"Fehler bei der KI-Generierung: {e}"
+
+
+def generiere_whatsapp_entwurf(anweisung, ansprache, empfaenger_name, brandvoice_wahl="ohne", bezug_text=""):
+    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    ansprache = _ansprache_aus_kontakt({"ansprache": ansprache})
+    prompt = (
+        f"Du schreibst eine kurze WhatsApp-Nachricht.\n"
+        f"{brandvoice_auswahl_block(brandvoice_wahl)}\n"
+        f"Empfänger: {empfaenger_name}\n"
+        f"Anrede-Stil: {ansprache}\n"
+        f"{'Bezug/Kontext: ' + bezug_text if bezug_text.strip() else ''}\n"
+        f"Inhalt: {anweisung}\n"
+        f"Maximal 2-4 kurze Saetze, WhatsApp-tauglich, ohne Betreffzeile."
+    )
+    try:
+        return client.chat.completions.create(
+            model="gpt-4o", messages=[{"role": "user", "content": prompt}], temperature=0.5
+        ).choices[0].message.content
+    except Exception as e:
+        return f"Fehler bei der KI-Generierung: {e}"
+
+
+def _brandvoice_radio(key: str, default: str = "ohne") -> str:
+    labels = brandvoice_radio_labels()
+    optionen = [o["id"] for o in BRANDVOICE_RADIO]
+    index = optionen.index(default) if default in optionen else len(optionen) - 1
+    return st.radio(
+        "Brandvoice",
+        options=optionen,
+        format_func=lambda x: labels.get(x, x),
+        horizontal=True,
+        key=key,
+        index=index,
+    )
 
 
 def sende_email_via_outlook(empfaenger_email, betreff, inhalt, absender_konto, anhaenge_pfade=None, ist_antwort=False):
@@ -1601,6 +1641,7 @@ elif haupttab == "mails":
 
                 st.markdown(f"**Neue E-Mail an {name}**")
                 st.caption(f"Anrede-Stil: **{ansprache}** (aus Whitelist)")
+                brandvoice_wahl = _brandvoice_radio("ne_mail_brandvoice")
                 absender_konten = hole_outlook_konten()
                 absender_keys = [k["key"] for k in absender_konten]
                 absender_labels = {k["key"]: k["label"] for k in absender_konten}
@@ -1634,7 +1675,8 @@ elif haupttab == "mails":
                             with st.spinner("KI schreibt Entwurf…"):
                                 _ne_mail_entwurf_bereitstellen(
                                     generiere_neue_mail_entwurf(
-                                        anweisung.strip(), ansprache, name, betreff.strip()
+                                        anweisung.strip(), ansprache, name, betreff.strip(),
+                                        brandvoice_wahl=brandvoice_wahl,
                                     )
                                 )
                             st.rerun()
@@ -1725,7 +1767,26 @@ elif haupttab == "mails":
             if not sel.empty:
                 row = sel.iloc[0]
                 name = f"{row['vorname']} {row['nachname']}".strip()
-                wa_link = baue_whatsapp_link(row["mobil"], "")
+                ansprache = _ansprache_aus_kontakt(row)
+                brandvoice_wahl = _brandvoice_radio(f"wa_brandvoice_{st.session_state.wa_selected_id}")
+                wa_anweisung = feld_mit_mikro(
+                    f"wa_anweisung_{st.session_state.wa_selected_id}",
+                    lambda: st.text_area(
+                        "WhatsApp-Text (diktieren oder KI-Entwurf)",
+                        placeholder="Kurz, worum es geht…",
+                        key=f"wa_anweisung_{st.session_state.wa_selected_id}",
+                    ),
+                )
+                if st.button("✨ KI-Entwurf", key=f"wa_gen_{st.session_state.wa_selected_id}"):
+                    if not wa_anweisung.strip():
+                        st.warning("Bitte kurz beschreiben, was die Nachricht enthalten soll.")
+                    else:
+                        st.session_state[f"wa_text_{st.session_state.wa_selected_id}"] = generiere_whatsapp_entwurf(
+                            wa_anweisung.strip(), ansprache, name, brandvoice_wahl=brandvoice_wahl
+                        )
+                        st.rerun()
+                wa_text = st.session_state.get(f"wa_text_{st.session_state.wa_selected_id}", wa_anweisung)
+                wa_link = baue_whatsapp_link(row["mobil"], wa_text)
                 if wa_link:
                     st.markdown(f"**An {name} senden:**")
                     st.markdown(
@@ -1746,6 +1807,7 @@ elif haupttab == "mails":
         format_func=lambda key: absender_labels.get(key, key),
         key="reply_mail_absender",
     )
+    reply_brandvoice = _brandvoice_radio("reply_mail_brandvoice")
     whitelist_df = lade_whitelist()
     if whitelist_df.empty:
         st.info("Die Whitelist ist leer oder die Datenbank ist nicht erreichbar.")
@@ -1769,7 +1831,8 @@ elif haupttab == "mails":
                     )
                     if st.button("✨ Entwurf generieren", key=f"btn_gen_{i}"):
                         st.session_state[f"edit_{i}"] = generiere_mail_entwurf(
-                            mail["Inhalt"], anweisung, mail["Ansprache"], mail["Name"]
+                            mail["Inhalt"], anweisung, mail["Ansprache"], mail["Name"],
+                            brandvoice_wahl=reply_brandvoice,
                         )
                         st.rerun()
                     if f"edit_{i}" in st.session_state:

@@ -6,6 +6,9 @@ Wiki-RAG ist nur fuer echtes Dokumentenwissen (Vertraege, Verfahren, Formulare) 
 
 from __future__ import annotations
 
+from config import SQL_DEFAULT_TOP
+from sql_db_meta import baue_access_join_regeln
+
 __all__ = [
     "baue_semantik_leitfaden",
     "baue_klassifikator_leitfaden",
@@ -51,7 +54,7 @@ SEMANTISCHE_FELDALIASE = [
         "db_tabelle": "stammdatenindustrie",
         "db_felder": ["funktion", "efunktion"],
         "filter_beispiel": "funktion LIKE '%...%'",
-        "hinweis": "funktion = Kurzbezeichnung, efunktion = Detail.",
+        "hinweis": "funktion = Kurzbezeichnung, efunktion = Detail. Marktrolle der FIRMA – nicht Personen-Hierarchie (dafuer ref_funktionen).",
     },
     {
         "nutzer_begriffe": [
@@ -69,6 +72,28 @@ SEMANTISCHE_FELDALIASE = [
         "filter_beispiel": "JOIN abdaartikel ON anbieter_nr = anbieternummer",
         "hinweis": "Firmenname: stammdatenindustrie.nama; Artikel: abdaartikel.",
     },
+    {
+        "nutzer_begriffe": [
+            "geschaeftsfuehrer", "geschäftsführer", "gf", "vorstand", "vorstandsvorsitzender",
+            "inhaber", "hierarchie", "hierarchiestufe", "ebene", "position", "leiter",
+            "apothekenleiter", "kam", "key account", "ansprechpartner ebene",
+        ],
+        "db_tabelle": "ref_funktionen (+ crm_personen)",
+        "db_felder": [
+            "ref_funktionen.ebene", "ref_funktionen.funktionsbezeichnung",
+            "crm_personen.funktionsbezeichnung", "crm_personen.funktionid",
+        ],
+        "filter_beispiel": (
+            "FROM (crm_personen AS p INNER JOIN stammdatenindustrie AS s ON p.kundennumm = s.kundennumm) "
+            "LEFT JOIN ref_funktionen AS rf ON p.funktionid = rf.funktionid "
+            "WHERE rf.ebene IN ('1', '2')"
+        ),
+        "hinweis": (
+            "Personen-Hierarchie ueber ref_funktionen (JOIN per funktionid), "
+            "NICHT stammdatenindustrie.funktion (Marktrolle der Firma). "
+            "ebene: 1=Vorstand/Inhaber, 2=GF/Vorstand/Apothekenleiter, 3=Leiter/KAM, 4=Mitarbeiter."
+        ),
+    },
 ]
 
 
@@ -83,11 +108,16 @@ def baue_semantik_leitfaden() -> str:
             f"  -> {eintrag['hinweis']}"
         )
     zeilen.append(
-        "\nBEISPIEL-ABFRAGE:\n"
-        "Frage: 'Firmen in Akquiseklasse 3 mit Apotheken-Fokus'\n"
-        "SQL: SELECT TOP 50 akquiseklasse, Marktzielgruppe, emarktzielgruppe, nama, nameb, ort, plz "
+        "\nBEISPIEL-ABFRAGEN:\n"
+        "1) Firmen in Akquiseklasse 3 mit Apotheken-Fokus\n"
+        f"   SELECT TOP {SQL_DEFAULT_TOP} akquiseklasse, Marktzielgruppe, emarktzielgruppe, nama, nameb, ort, plz "
         "FROM stammdatenindustrie WHERE akquiseklasse = 3 "
-        "AND (Marktzielgruppe LIKE '%Apothek%' OR emarktzielgruppe LIKE '%Apothek%')"
+        "AND (Marktzielgruppe LIKE '%Apothek%' OR emarktzielgruppe LIKE '%Apothek%')\n"
+        "2) Wer ist GF bei Hexal?\n"
+        f"   SELECT TOP {SQL_DEFAULT_TOP} p.vorname, p.nachname, rf.funktionsbezeichnung, rf.ebene, s.nama "
+        "FROM (crm_personen AS p INNER JOIN stammdatenindustrie AS s ON p.kundennumm = s.kundennumm) "
+        "LEFT JOIN ref_funktionen AS rf ON p.funktionid = rf.funktionid "
+        "WHERE s.nama LIKE '%Hexal%' AND rf.ebene IN ('1', '2')"
     )
     return "\n".join(zeilen)
 
@@ -129,7 +159,7 @@ SQL_FRAGETYPEN = [
         ],
         "ausgabefelder": [
             "vorname", "nachname", "funktionsbezeichnung", "telefon", "mobil", "emailpers",
-            "nama", "nameb", "ort", "ebene",
+            "nama", "nameb", "ort", "rf.ebene", "rf.funktionsbezeichnung",
         ],
         "joins": [
             "crm_personen.kundennumm = stammdatenindustrie.kundennumm",
@@ -139,7 +169,7 @@ SQL_FRAGETYPEN = [
         "beispiele": [
             "Wer ist Ansprechpartner bei Hexal?",
             "Telefonnummer von Mueller bei Bayer",
-            "Alle GF in der Datenbank",
+            "Wer ist GF bei Bayer? (ref_funktionen.ebene IN ('1','2'))",
         ],
     },
     {
@@ -419,10 +449,11 @@ Schritt 4: SELECT nur relevante Ausgabefelder, nicht SELECT * bei JOINs.
 === GLOBALE JOIN-REGELN ===
 Siehe db_joins.csv (vollstaendiger JOIN-Graph) und db_tabellen.csv (Tabellenrollen).
 
-""" + baue_semantik_leitfaden() + """
+""" + baue_semantik_leitfaden() + baue_access_join_regeln() + f"""
 
 === ACCESS-SQL ===
-- SELECT TOP 50 bei Listen
+- SELECT TOP {SQL_DEFAULT_TOP} bei Listen (Standard-Limit, konfigurierbar via DIGIWIKI_SQL_DEFAULT_TOP)
+- Nutzer nennt explizit ein Limit (z.B. Top 10) -> dieses Limit verwenden
 - GROUP BY statt SELECT DISTINCT mit ORDER BY auf Alias
 - Textsuche: LIKE '%' mit OR-Synonymen
 """

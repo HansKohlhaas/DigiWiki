@@ -2,6 +2,8 @@ Von_Tabelle;Von_Spalte;Nach_Tabelle;Nach_Spalte;Kardinalitaet;Beschreibung;SQL_J
 crm_personen;kundennumm;stammdatenindustrie;kundennumm;N:1;Person gehoert zu Firma;INNER JOIN stammdatenindustrie AS s ON crm_personen.kundennumm = s.kundennumm
 crm_personen;funktionid;ref_funktionen;funktionid;N:1;Person hat Hierarchie/Funktion;LEFT JOIN ref_funktionen AS rf ON crm_personen.funktionid = rf.funktionid
 crm_personen;linkedin_canonical_url;Connections;canonical_url;N:1;Person zu LinkedIn Profil;LEFT JOIN Connections AS c ON crm_personen.linkedin_canonical_url = c.canonical_url
+crm_personen;linkedin;Connections;canonical_url;N:1;Person zu LinkedIn Profil (alternatives Feld);LEFT JOIN Connections AS c ON crm_personen.linkedin = c.canonical_url
+Whitelist_Kontakte;indpersonid;crm_personen;personid;N:1;Whitelist zu Industrie-Person;LEFT JOIN crm_personen AS p ON Whitelist_Kontakte.apopersonid = p.personid
 crm_aktivitaeten;personid;crm_personen;personid;N:1;Aktivitaet zu Person;INNER JOIN crm_personen AS p ON CStr(crm_aktivitaeten.personid) = p.personid
 crm_aktivitaeten;personurl;Connections;canonical_url;N:1;Aktivitaet zu LinkedIn URL;LEFT JOIN Connections AS c ON crm_aktivitaeten.personurl = c.canonical_url
 crm_firmen_aktivitaeten;kundennumm;stammdatenindustrie;kundennumm;N:1;Firmenaktivitaet zu Firma;INNER JOIN stammdatenindustrie AS s ON CStr(crm_firmen_aktivitaeten.kundennumm) = s.kundennumm

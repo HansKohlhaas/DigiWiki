@@ -1,0 +1,99 @@
+﻿Tabelle;Spalte;Datentyp;Info_Kategorie;Info_Typ;Beschreibung;Such_Tag;Join_FK;NL_Hinweis
+stammdatenindustrie;kundennumm;str;Identifikation;Schluessel;"Primaerschluessel der Firma; verbindet Personen, Trigger, Whitelist, Datei_Index";[PK];crm_personen.kundennumm;"JOIN-Hub; bei Vergleich mit int-Spalten CStr() nutzen"
+stammdatenindustrie;bganr;str;Identifikation;Kennzeichen;Betriebsstaettennummer (selten befuellt);[LEER];;"In der Praxis meist leer; nicht fuer Suche verwenden"
+stammdatenindustrie;akquiseklasse;int;Marktsegment;Kennzahl;Akquise-/Bearbeitungsklasse der Firma (1=hoechste Prioritaet bis 4);[FILTER];;"Exakter Zahlenvergleich: akquiseklasse = 3; kein LIKE"
+stammdatenindustrie;funktion;str;Marktsegment;Kategorietext;Marktrolle der Firma (Kurzform), z.B. Vertrieb, Hersteller – NICHT Personen-Hierarchie;[SUCH];;"NICHT mit ref_funktionen verwechseln; = 'Hersteller'"
+stammdatenindustrie;efunktion;str;Marktsegment;Freitext;Ausfuehrliche Beschreibung der Marktrolle / Marktfunktion der Firma;[SUCH];;"Freitext; LIKE mit OR-Synonymen"
+stammdatenindustrie;Marktzielgruppe;str;Marktsegment;Kategorietext;Angebotsrichtung / Marktorientierung (Hauptsegment, z.B. Apotheken, Anbieter IS);[SUCH];;"Apotheken-Fokus: LIKE '%Apothek%'; bevorzugt gegenueber apotheken_fokus"
+stammdatenindustrie;emarktzielgruppe;str;Marktsegment;Kategorietext;Detail-Marktorientierung (z.B. B2B, Apotheken, Endverbraucher);[SUCH];;Apotheken-Fokus zusaetzlich pruefen: LIKE '%Apothek%'
+stammdatenindustrie;produktschwerpunkt;str;Sortiment_Produkte;Freitext;Welche Produktbereiche die Firma schwerpunktmaessig abdeckt;[SUCH];;Textsuche LIKE '%Diabetes%' o.ae.
+stammdatenindustrie;Kategorie;str;Marktsegment;Kategorietext;Angebotskategorie / Sortimentskategorie (Kurzform);[SUCH];;LIKE '%Allergie%' etc.
+stammdatenindustrie;ekategorie;str;Marktsegment;Freitext;Detailbeschreibung der Angebotskategorie;[SUCH];;Freitext-Ergaenzung zu Kategorie
+stammdatenindustrie;anbieternummer;int;Identifikation;FK;"ABDA-Anbieternummer; Verknuepfung zum Produktkatalog";[FK];abdaartikel.anbieter_nr;JOIN abdaartikel ON anbieter_nr = anbieternummer fuer Artikel/Produkte
+stammdatenindustrie;nama;str;Identifikation;Kategorietext;Erstteil Firmenname / Anbietername (Hauptsuchfeld fuer Firmen);[SUCH];;Primaeres Suchfeld fuer Firmennamen: LIKE '%Hexal%'
+stammdatenindustrie;nameb;str;Identifikation;Kategorietext;Zweitteil Firmenname / Ergaenzung zum Anbieternamen;[SUCH];;"Oft leer; bei Suche nama UND nameb mit OR verknuepfen"
+stammdatenindustrie;kurzname;str;Identifikation;Kategorietext;Kurzbezeichnung der Firma;[SUCH];;Alternative zu nama fuer Abkuerzungen
+stammdatenindustrie;LKZ;str;Adresse;Kategorietext;Laenderkennzeichen (z.B. DE, AT, CH);[FILTER];;Laenderfilter: LKZ = 'DE' oder LIKE 'D%'
+stammdatenindustrie;plz;str;Adresse;Kategorietext;Postleitzahl des Firmensitzes;[FILTER];;Exakt oder Prefix: plz LIKE '40%'
+stammdatenindustrie;ort;str;Adresse;Kategorietext;Ort / Stadt des Firmensitzes;[SUCH];;LIKE '%Koeln%' OR LIKE '%Cologne%'
+stammdatenindustrie;strasse;str;Adresse;Kategorietext;Strassenname des Firmensitzes;[AUSGABE];;"Selten Suchkriterium; eher Ausgabefeld"
+stammdatenindustrie;hausnr;str;Adresse;Kategorietext;Hausnummer;[AUSGABE];;Ausgabefeld zur Adresse
+stammdatenindustrie;telefon;str;Kontakt;Kategorietext;Zentrale Telefonnummer der Firma;[AUSGABE];;Ausgabe bei Adress-/Kontaktfragen
+stammdatenindustrie;fax;str;Kontakt;Kategorietext;Faxnummer;[LEER];;Meist unbefuellt
+stammdatenindustrie;internetadresse;str;Kontakt;URL;Website / Homepage der Firma;[AUSGABE];;Ausgabe bei 'Website von Firma X'
+stammdatenindustrie;email;str;Kontakt;Kategorietext;Allgemeine E-Mail-Adresse der Firma;[AUSGABE];;"Ausgabe; selten Suchkriterium"
+stammdatenindustrie;dategurl;str;Kontakt;URL;Dateg-Portal-URL;[LEER];;"Spezial-URL; selten relevant"
+stammdatenindustrie;logourl;str;Kontakt;URL;URL zum Firmenlogo;[LEER];;Nur fuer Darstellung, nicht fuer Suche
+stammdatenindustrie;LinkedinURL;str;LinkedIn;URL;LinkedIn-URL der Firma;[AUSGABE];;Einziges Firmen-LinkedIn-Feld (linkedin_url entfernt, war Duplikat)
+stammdatenindustrie;linkedin_url_status;str;LinkedIn;Status;Pruefstatus der LinkedIn-URL;[INTERN];;Internes Qualitaetsfeld
+stammdatenindustrie;benutzername;str;Metadaten;Kategorietext;Benutzername / Bearbeiterzuordnung;[INTERN];;Internes Feld
+stammdatenindustrie;iban;str;Kontakt;Kategorietext;IBAN Bankverbindung;[LEER];;"Selten befuellt; Datenschutz beachten"
+stammdatenindustrie;bic;str;Kontakt;Kategorietext;BIC Bankverbindung;[LEER];;Selten befuellt
+stammdatenindustrie;datum;datetime;Metadaten;Datum;Anlagedatum des Datensatzes;[INTERN];;Metadatum, nicht fuer Nutzerfragen
+stammdatenindustrie;schliessung;datetime;Firmenprofil;Datum;Schliessungsdatum der Firma (falls geschlossen);[FILTER];;"IS NULL = aktiv; IS NOT NULL = geschlossen"
+stammdatenindustrie;gruendung;float;Firmenprofil;Kennzahl;Gruendungsjahr;[AUSGABE];;Numerischer Vergleich moeglich
+stammdatenindustrie;kooperation;str;Firmenprofil;Kategorietext;Kooperationszugehoerigkeit;[SUCH];;LIKE-Suche
+stammdatenindustrie;gruppe;str;Firmenprofil;Kategorietext;Unternehmensgruppe / Konzernzugehoerigkeit;[SUCH];;LIKE '%Bayer%' fuer Konzernfragen
+stammdatenindustrie;filiale;str;Firmenprofil;Kategorietext;Filial-/Standortkennzeichen wenn abweichend von kundennumm;[LEER];;Selten genutzt
+stammdatenindustrie;firmentyp;str;Firmenprofil;Kategorietext;Typisierung: Konzern, Familienunternehmen etc.;[SUCH];;LIKE-Suche
+stammdatenindustrie;groessenklasse;str;Firmenprofil;Kategorietext;Standardisierte Groessenklasse des Unternehmens;[FILTER];;Kategorischer Filter
+stammdatenindustrie;umsatzklasse;str;Firmenprofil;Kategorietext;Umsatzklasse / Groessen nach Umsatz;[FILTER];;Kategorischer Filter
+stammdatenindustrie;mitarbeiterzahl;str;Firmenprofil;Kategorietext;Mitarbeiterzahl (oft als Textband);[AUSGABE];;Ausgabe bei Groessenfragen
+stammdatenindustrie;anzahlabda;float;Kennzahlen;Kennzahl;Anzahl ABDA-gelisteter Artikel gesamt;[FILTER];;Numerischer Vergleich / ORDER BY fuer Rankings
+stammdatenindustrie;anzahlrx;float;Kennzahlen;Kennzahl;Anzahl verschreibungspflichtiger (Rx) ABDA-Artikel;[FILTER];;Rx-Fokus: anzahlrx > 0
+stammdatenindustrie;anzahlnonrx;float;Kennzahlen;Kennzahl;Anzahl freiverkaeuflicher (OTC/Non-Rx) ABDA-Artikel;[FILTER];;OTC-Fokus: anzahlnonrx > 0
+stammdatenindustrie;umsatzpotenzialmio;float;Kennzahlen;Kennzahl;Geschaetztes Umsatzpotenzial in Millionen EUR;[FILTER];;ORDER BY umsatzpotenzialmio DESC fuer Top-Firmen
+stammdatenindustrie;wws;str;Firmenprofil;Kategorietext;Warenwirtschaftssystem;[LEER];;Selten relevant fuer Standardfragen
+stammdatenindustrie;gl_produkt1;str;Sortiment_Produkte;Freitext;Wichtigstes Produkt 1 (Gelbe-Liste-/GL-Herkunft);[SUCH];;Top-Produkt-Suche: LIKE
+stammdatenindustrie;gl_produkt2;str;Sortiment_Produkte;Freitext;Wichtigstes Produkt 2;[SUCH];;Top-Produkt-Suche
+stammdatenindustrie;gl_produkt3;str;Sortiment_Produkte;Freitext;Wichtigstes Produkt 3;[SUCH];;Top-Produkt-Suche
+stammdatenindustrie;topprodukte;str;Sortiment_Produkte;Freitext;Zusammenfassung des Angebots / Top-Produkte mit Markennennung;[SUCH];;Bevorzugtes Feld fuer 'Top-Produkte von Firma X'
+stammdatenindustrie;APlicht;str;Sortiment_Produkte;Kategorietext;Apothekenpflicht im Sortiment (ja/nein/anteilig);[FILTER];;Kategorischer Filter
+stammdatenindustrie;sortiment;str;Sortiment_Produkte;Freitext;Sortimentsschwerpunkt / Sortimentsbeschreibung;[SUCH];;'Welches Sortiment hat Firma X?'
+stammdatenindustrie;sortimentsstruktur;str;Sortiment_Produkte;Freitext;Struktur des Sortiments nach Anteilen;[AUSGABE];;Ausgabefeld Sortimentsanalyse und Zugehörigkeit zu welchen Sortimentsteilen
+stammdatenindustrie;markenstruktur;str;Sortiment_Produkte;Freitext;Markenanteile im Sortiment (z.B. Aspirin-Anteil);[AUSGABE];;Ausgabe Markenstruktur und  Zugehörigkeit zu welchen Sortimentsteilen
+stammdatenindustrie;hauptgruppe;str;Sortiment_Produkte;Kategorietext;Hauptsortimentsgruppe in der die Firma taetig ist;[SUCH];;LIKE-Suche Sortimentsbereich
+stammdatenindustrie;ugruppe;str;Sortiment_Produkte;Kategorietext;Untergruppe im Sortiment, in welcher Waren- oder Untergruppe ist die Firma tätig (z. B. Hautpflege);[SUCH];;LIKE-Suche
+stammdatenindustrie;zugehoerigkeit;str;Sortiment_Produkte;Freitext;Sortimentsbereiche in denen die Firma praesent ist;[SUCH];;"Mehrere Bereiche moeglich; LIKE"
+stammdatenindustrie;narrativ;str;Strategie_Narrativ;Freitext;Strategisches Narrativ / Marktpositionierung der Firma in Prosa;[SUCH];;'Was ist das Narrativ von Firma X?' – LIKE oder SELECT Ausgabe
+stammdatenindustrie;purpose;str;Strategie_Narrativ;Freitext;Daseinszweck / Purpose der Firma;[SUCH];;Strategiefragen (wer ist denn in der Entwicklung tätig)
+stammdatenindustrie;begruendung;str;Strategie_Narrativ;Freitext;Begruendung der Marktposition / Einordnung;[AUSGABE];;Ausgabefeld Strategie
+stammdatenindustrie;trigger_events;str;Strategie_Narrativ;Freitext;Geplante Veraenderungen, Trigger, Entwicklungen (Freitext, nicht crm_firmen_trigger_historie);[SUCH];;"Fuer Trigger in Stammdaten; strukturierte Historie: crm_firmen_trigger_historie"
+stammdatenindustrie;entscheider;str;Strategie_Narrativ;Freitext;Entscheider-Namen als Freitext (ohne JOIN zu crm_personen);[AUSGABE];;Fuer konkrete Kontakte crm_personen nutzen
+stammdatenindustrie;ambition;str;Strategie_Narrativ;Freitext;Unternehmensambition / Was will die Firma erreichen;[AUSGABE];;Strategie-Ausgabe
+stammdatenindustrie;zielsetzung;str;Strategie_Narrativ;Freitext;Mittelfristige Zielsetzung;[AUSGABE];;Strategie-Ausgabe
+stammdatenindustrie;unsub;bool;Metadaten;Boolean;Abmeldung / Opt-out Flag;[FILTER];;unsub = False oder 0 fuer aktive Firmen
+stammdatenindustrie;aktuelle_haupt_url;str;Kontakt;URL;Aktuelle Haupt-Website (verifiziert);[AUSGABE];;Bevorzugt gegenueber internetadresse wenn befuellt
+stammdatenindustrie;veredelung_status;str;Veredelung_Scoring;Status;Status der Datensatz-Veredelung (Anreicherung);[FILTER];;Internes Qualitaets-/Workflow-Feld
+stammdatenindustrie;veredelung_methode;str;Veredelung_Scoring;Kategorietext;Methode der Veredelung (z.B. KI, manuell);[INTERN];;Workflow-Metadatum
+stammdatenindustrie;veredelung_score;str;Veredelung_Scoring;Kategorietext;Qualitaetsscore nach Veredelung;[FILTER];;Filter/Ranking nach Datenqualitaet
+stammdatenindustrie;d2p_score;str;Veredelung_Scoring;Kategorietext;Direct-to-Pharmacy Score / Eignung D2P-Kanal;[FILTER];;'Firmen mit hohem D2P-Score' – Filter oder ORDER BY
+stammdatenindustrie;d2p_begruendung;str;Veredelung_Scoring;Freitext;Begruendung des D2P-Scores;[AUSGABE];;Ausgabe bei D2P-Fragen
+stammdatenindustrie;gefundene_personen;str;Veredelung_Scoring;Freitext;Automatisch gefundene Personen (Freitext, Apollo/KI);[AUSGABE];;Fuer strukturierte Personen: crm_personen JOIN
+stammdatenindustrie;top_produkte;str;Sortiment_Produkte;Freitext;Top-Produkte (alternatives/angereichertes Feld zu topprodukte);[SUCH];;topprodukte ODER top_produkte pruefen
+stammdatenindustrie;apotheken_fokus;str;Marktsegment;Kategorietext;Apotheken-Fokus (Reserviert, in DB praktisch leer);[LEER];;NICHT filtern – stattdessen Marktzielgruppe/emarktzielgruppe LIKE '%Apothek%'
+stammdatenindustrie;funktion_pruefung;str;Veredelung_Scoring;Status;Pruefstatus Marktfunktion;[INTERN];;Qualitaetspruefung intern
+stammdatenindustrie;marktzielgruppe_pruefung;str;Veredelung_Scoring;Status;Pruefstatus Marktzielgruppe;[INTERN];;Qualitaetspruefung intern
+stammdatenindustrie;kategorie_pruefung;str;Veredelung_Scoring;Status;Pruefstatus Kategorie;[INTERN];;Qualitaetspruefung intern
+stammdatenindustrie;gl_email;str;GL_Stamm;Kategorietext;E-Mail aus Gelber-Liste-Stamm;[AUSGABE];;"GL = Gelbe Liste Import; alternative Kontaktquelle"
+stammdatenindustrie;gl_fax;str;GL_Stamm;Kategorietext;Fax aus Gelber-Liste-Stamm;[AUSGABE];;GL-Kontaktfeld
+stammdatenindustrie;gl_firma;str;GL_Stamm;Kategorietext;Firmenname aus Gelber-Liste-Stamm;[AUSGABE];;Vergleich mit nama moeglich
+stammdatenindustrie;gl_hausnr;str;GL_Stamm;Kategorietext;Hausnummer GL-Stamm;[AUSGABE];;GL-Adressfeld
+stammdatenindustrie;gl_kundennumm;str;GL_Stamm;FK;Kundennummer Verweis GL-Stamm (ggf. Mutterfirma);[FK];stammdatenindustrie.kundennumm;Optional JOIN auf verwandte Firma
+stammdatenindustrie;gl_lnderkennzeichen;str;GL_Stamm;Kategorietext;Laenderkennzeichen GL-Stamm;[AUSGABE];;GL-Adressfeld
+stammdatenindustrie;gl_ort;str;GL_Stamm;Kategorietext;Ort GL-Stamm;[AUSGABE];;GL-Adressfeld
+stammdatenindustrie;gl_plz;str;GL_Stamm;Kategorietext;PLZ GL-Stamm;[AUSGABE];;GL-Adressfeld
+stammdatenindustrie;gl_plz_ort;str;GL_Stamm;Kategorietext;PLZ und Ort kombiniert GL-Stamm;[AUSGABE];;GL-Adressfeld
+stammdatenindustrie;gl_strasse;str;GL_Stamm;Kategorietext;Strasse GL-Stamm;[AUSGABE];;GL-Adressfeld
+stammdatenindustrie;gl_telefon;str;GL_Stamm;Kategorietext;Telefon GL-Stamm;[AUSGABE];;GL-Kontaktfeld
+stammdatenindustrie;gl_web;str;GL_Stamm;URL;Webseite GL-Stamm;[AUSGABE];;GL-Kontaktfeld
+stammdatenindustrie;linkedin_url_quelle;str;LinkedIn;Kategorietext;Quelle der LinkedIn-URL (z.B. Apollo, manuell);[INTERN];;Metadatum
+stammdatenindustrie;linkedin_url_geprueft_am;datetime;LinkedIn;Datum;Datum der LinkedIn-URL-Pruefung;[INTERN];;Metadatum
+stammdatenindustrie;linkedin_url_notiz;str;LinkedIn;Freitext;Notiz zur LinkedIn-URL;[INTERN];;Metadatum
+stammdatenindustrie;apollo_search_status;str;Apollo_Intern;Status;Status Apollo-Firmensuche;[INTERN];;Nur fuer interne Recherche-Workflows
+stammdatenindustrie;apollo_search_lauf_id;str;Apollo_Intern;Kategorietext;Lauf-ID Apollo-Suche;[INTERN];;Workflow-Metadatum
+stammdatenindustrie;apollo_search_geplant_am;datetime;Apollo_Intern;Datum;Geplantes Datum Apollo-Suche;[INTERN];;Workflow-Metadatum
+stammdatenindustrie;apollo_search_ausgefuehrt_am;datetime;Apollo_Intern;Datum;Ausfuehrungsdatum Apollo-Suche;[INTERN];;Workflow-Metadatum
+stammdatenindustrie;apollo_search_treffer;int;Apollo_Intern;Kennzahl;Anzahl Apollo-Treffer;[INTERN];;Workflow-Metadatum
+stammdatenindustrie;apollo_search_domain;str;Apollo_Intern;Kategorietext;Gefundene Domain via Apollo;[INTERN];;Workflow-Metadatum
+stammdatenindustrie;apollo_search_fehler;str;Apollo_Intern;Freitext;Fehlermeldung Apollo-Suche;[INTERN];;Workflow-Metadatum

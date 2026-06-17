@@ -6,6 +6,12 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_classic.chains.combine_documents import create_stuff_documents_chain
 from langchain_classic.chains import create_retrieval_chain
 from config import chroma_db_path_str, ist_gueltiger_wissensbereich, liste_wissensbereiche
+from brandvoice import (
+    BRANDVOICE_PROFILE,
+    _finde_brandvoice_dateien,
+    erkenne_brandvoice_wiki_frage,
+    lade_brandvoice_kontext_fuer_frage,
+)
 
 # 1. WICHTIG: ChromaDB Telemetrie hart abschalten (verhindert Netzwerk-Hänger)
 os.environ["ANONYMIZED_TELEMETRY"] = "False"
@@ -13,6 +19,8 @@ os.environ["ANONYMIZED_TELEMETRY"] = "False"
 load_dotenv()
 
 DATENBANK_ORDNER = chroma_db_path_str()
+
+KEINE_INFO_TEXT = "Dazu liegen mir in der Datenbank aktuell keine Informationen vor."
 
 # --- DER NEUE C-LEVEL SYSTEM-PROMPT ---
 SYSTEM_PROMPT = """Du bist die exklusive, hochprofessionelle KI-Assistenz für den Geschäftsführer von DigiBest.
@@ -32,6 +40,19 @@ BISHERIGER GESPRÄCHSVERLAUF:
 {chat_historie}
 """
 
+BRANDVOICE_SYSTEM_PROMPT = """Du beantwortest Fragen zu Brandvoice-Dokumenten (Tonalitaet, Stil, Formulierungen).
+Nutze AUSSCHLIESSLICH den bereitgestellten Dokumenttext. Rate nichts dazu.
+Wenn das Thema im Text nicht vorkommt, sage klar: "Dazu liegen mir in der Datenbank aktuell keine Informationen vor."
+Nenne am Ende in Klammern die Quelldatei(en), aus denen du zitiert hast.
+
+BRANDVOICE-DOKUMENTE ({profil_name}):
+{context}
+
+BISHERIGER GESPRÄCHSVERLAUF:
+{chat_historie}
+"""
+
+
 def baue_retriever(vektor_datenbank, bereich=None, max_treffer=5):
     if bereich and bereich != "vollzugriff":
         if not ist_gueltiger_wissensbereich(bereich):
@@ -40,51 +61,88 @@ def baue_retriever(vektor_datenbank, bereich=None, max_treffer=5):
     return vektor_datenbank.as_retriever(search_kwargs={"k": max_treffer})
 
 
+def _antwort_ohne_treffer(antwort: str) -> bool:
+    return KEINE_INFO_TEXT in (antwort or "")
+
+
+def frage_brandvoice_dokument(aktuelle_frage, historie_text="", stimme="hans"):
+    """Direkter Pfad: Brandvoice-.docx lesen statt Vektor-Suche im CRM-Meer."""
+    dateien = _finde_brandvoice_dateien(stimme)
+    kontext, quellen = lade_brandvoice_kontext_fuer_frage(stimme, aktuelle_frage)
+    profil_name = BRANDVOICE_PROFILE[stimme]["name"]
+    if not kontext:
+        if dateien:
+            hinweis = (
+                f"(Brandvoice-Dateien gefunden ({len(dateien)}), aber .docx-Text konnte nicht "
+                f"gelesen werden. In der venv ausfuehren: python -m pip install docx2txt)"
+            )
+        else:
+            hinweis = f"(Keine Brandvoice-Dateien fuer {profil_name} gefunden.)"
+        return {
+            "antwort": f"{KEINE_INFO_TEXT}\n\n{hinweis}",
+            "quellen": [],
+        }
+    llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.1, timeout=60, max_retries=1)
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", BRANDVOICE_SYSTEM_PROMPT),
+        ("human", "{input}"),
+    ])
+    kette = prompt | llm
+    antwort = kette.invoke({
+        "input": aktuelle_frage,
+        "context": kontext,
+        "chat_historie": historie_text or "(keiner)",
+        "profil_name": profil_name,
+    }).content
+    if _antwort_ohne_treffer(antwort):
+        return {"antwort": antwort, "quellen": []}
+    return {"antwort": antwort, "quellen": quellen}
+
+
 def frage_das_wiki(aktuelle_frage, historie_text="", bereich=None, max_treffer=5):
     """
     Fragt die Datenbank ab. Akzeptiert optional den bisherigen Gesprächsverlauf.
     """
+    brandvoice_stimme = erkenne_brandvoice_wiki_frage(aktuelle_frage)
+    if brandvoice_stimme:
+        return frage_brandvoice_dokument(
+            aktuelle_frage, historie_text=historie_text, stimme=brandvoice_stimme
+        )
+
     try:
-        # 2. Datenbank und KI laden
         embeddings = GoogleGenerativeAIEmbeddings(model="models/gemini-embedding-2")
         vektor_datenbank = Chroma(persist_directory=DATENBANK_ORDNER, embedding_function=embeddings)
         retriever = baue_retriever(vektor_datenbank, bereich=bereich, max_treffer=max_treffer)
-        
-        # 3. Timeout und Retries einbauen, um Endlos-Warten zu verhindern
+
         llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.1, timeout=30, max_retries=1)
-        
-        # 4. Den neuen Prompt zusammenbauen
+
         prompt = ChatPromptTemplate.from_messages([
             ("system", SYSTEM_PROMPT),
             ("human", "{input}")
         ])
-        
-        # 5. Die Kette (Chain) erstellen
+
         frage_antwort_kette = create_stuff_documents_chain(llm, prompt)
         rag_kette = create_retrieval_chain(retriever, frage_antwort_kette)
-        
-        # 6. Die Abfrage mit Historie starten
+
         antwort_objekt = rag_kette.invoke({
             "input": aktuelle_frage,
             "chat_historie": historie_text
         })
-        
-        # 7. Quellen sauber extrahieren
-        gefundene_dokumente = antwort_objekt.get("context", [])
+
+        antwort = antwort_objekt["answer"]
         quellen_set = set()
-        for doc in gefundene_dokumente:
-            quelle = doc.metadata.get("source", "Unbekannt")
-            dateiname = os.path.basename(quelle)
-            quellen_set.add(dateiname)
-            
+        if not _antwort_ohne_treffer(antwort):
+            for doc in antwort_objekt.get("context", []):
+                quelle = doc.metadata.get("source", "Unbekannt")
+                quellen_set.add(os.path.basename(quelle))
+
         return {
-            "antwort": antwort_objekt["answer"],
+            "antwort": antwort,
             "quellen": list(quellen_set)
         }
-        
+
     except Exception as e:
         print(f"Fehler im Orakel: {e}")
-        # 8. Echte Fehlermeldung direkt in die UI durchreichen
         return {
             "antwort": f"❌ **Technischer Fehler:** {str(e)}",
             "quellen": []

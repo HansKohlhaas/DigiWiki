@@ -1,7 +1,7 @@
 Tabelle;Rolle;Primaerschluessel;Ist_Hub;Beschreibung;Typische_Fragentypen
-stammdatenindustrie;Firmenstamm Industrie/Hersteller;kundennumm;ja;Zentrale Firmendaten Pharma/Industrie: Adresse Marktsegment Sortiment Narrativ;Firmenliste Adresse Marktsegment Akquise Topprodukte Narrativ D2P
+stammdatenindustrie;Firmenstamm Industrie/Hersteller;kundennumm;ja;HUB: Zentrale Firmendaten – alle Spalten in db_spalten.csv dokumentiert;Firmenliste Adresse Marktsegment Akquise Topprodukte Narrativ D2P Sortiment
 crm_personen;Ansprechpartner Personen;personid;nein;Kontakte mit Telefon Email Funktion Hierarchie pro Firma;Wer ist Ansprechpartner Telefon Email GF Hierarchie
-ref_funktionen;Hierarchie Referenz;funktionid;nein;Funktionsebenen z.B. GF Leiter;Hierarchie Position Ebene
+ref_funktionen;Hierarchie Referenz Personen;funktionid;nein;Funktions-Hierarchie je Ansprechpartner: ebene 1=Vorstand/Inhaber 2=GF/Vorstand/Leiter 3=Abteilungsleiter/KAM 4=Mitarbeiter;GF Geschaeftsfuehrer Vorstand Hierarchie Ebene Leiter KAM Ansprechpartner-Position
 abdaartikel;Produktkatalog ABDA;pzn;nein;Artikel PZN Wirkstoff Warengruppe je Anbieter;Wer stellt Produkt her Artikelliste PZN Warengruppe Rx OTC
 stammdatenapo;Apothekenstamm;kundennumm;nein;Apotheken Adresse Groesse Gruppe Bundesland;Apothekenliste Apothekengruppe PLZ Region
 Whitelist_Kontakte;Freigegebene Kontakte;ID;nein;Kuratierte Kontakte mit Prioritaet Ansprache Verknuepfung Industrie/Apo/Person;Whitelist Prioritaet freigegebene Kontakte
