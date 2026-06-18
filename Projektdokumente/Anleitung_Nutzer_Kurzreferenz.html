@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <title>DigiWiki – Kurzreferenz</title>
+  <style>
+    @page { size: A4; margin: 14mm; }
+    * { box-sizing: border-box; }
+    body {
+      font-family: "Segoe UI", Arial, sans-serif;
+      font-size: 10.5pt;
+      line-height: 1.35;
+      color: #1a1a1a;
+      max-width: 190mm;
+      margin: 0 auto;
+      padding: 8mm;
+    }
+    h1 { font-size: 16pt; margin: 0 0 4mm; border-bottom: 2px solid #2563eb; padding-bottom: 2mm; }
+    h2 { font-size: 11pt; margin: 5mm 0 2mm; color: #2563eb; }
+    p.sub { margin: 0 0 4mm; color: #555; font-size: 9.5pt; }
+    table { width: 100%; border-collapse: collapse; margin: 2mm 0 3mm; font-size: 10pt; }
+    th, td { border: 1px solid #ccc; padding: 3px 6px; text-align: left; vertical-align: top; }
+    th { background: #f0f4ff; font-weight: 600; }
+    .merksatz {
+      margin-top: 4mm;
+      padding: 4mm 6mm;
+      background: #f0f4ff;
+      border-left: 4px solid #2563eb;
+      font-size: 11pt;
+    }
+    .cols { display: flex; gap: 5mm; }
+    .cols > div { flex: 1; }
+    ul { margin: 1mm 0 3mm; padding-left: 5mm; }
+    li { margin-bottom: 1mm; }
+    .footer { margin-top: 4mm; font-size: 8.5pt; color: #666; }
+    @media print {
+      body { padding: 0; }
+      .no-print { display: none; }
+    }
+  </style>
+</head>
+<body>
+
+<p class="no-print" style="background:#fff3cd;padding:8px;border-radius:4px;">
+  <strong>Als PDF speichern:</strong> Strg+P → Drucker „Microsoft Print to PDF“ (oder „Als PDF speichern“) → Speichern.
+</p>
+
+<h1>DigiWiki – Kurzreferenz</h1>
+<p class="sub">Für Nutzer · Zugang + Bedienung auf einer Seite · Stand Juni 2026</p>
+
+<div class="cols">
+  <div>
+    <h2>1. Zugang (Handy)</h2>
+    <ol>
+      <li><strong>Tailscale</strong> → Verbunden (grün)</li>
+      <li><strong>Browser</strong> → Lesezeichen DigiWiki</li>
+    </ol>
+    <table>
+      <tr><th>❌ Nicht</th><th>✅ Stattdessen</th></tr>
+      <tr><td>192.168… von unterwegs</td><td>HTTPS-Link vom Admin</td></tr>
+      <tr><td>Browser vor Tailscale</td><td>Tailscale zuerst</td></tr>
+      <tr><td>Privates DNS Auto (Android)</td><td>Privates DNS Aus</td></tr>
+    </table>
+    <p><strong>Timeout?</strong> Flugmodus an/aus → Tailscale neu → URL erneut.</p>
+  </div>
+  <div>
+    <h2>2. Bedienung</h2>
+    <table>
+      <tr><th>Schritt</th><th>Aktion</th></tr>
+      <tr><td>1</td><td>Tab <strong>Wiki &amp; Daten</strong></td></tr>
+      <tr><td>2</td><td>Modus <strong>Auto</strong></td></tr>
+      <tr><td>3</td><td>Frage tippen / 🎤 diktieren</td></tr>
+      <tr><td>4</td><td>Enter / Fragen</td></tr>
+    </table>
+    <p>Verlauf löschen: System-Status → Chat-Verlauf leeren</p>
+  </div>
+</div>
+
+<h2>3. Antworten verstehen</h2>
+<table>
+  <tr><th>Symbol</th><th>Quelle</th><th>Ergebnis</th></tr>
+  <tr><td>🗄️</td><td>Datenbank</td><td>Tabelle (Firmen, Personen, Zahlen)</td></tr>
+  <tr><td>🧠</td><td>Wiki</td><td>Text + Quellen (Dokumente)</td></tr>
+</table>
+<p><strong>Auto:</strong> Erst Datenbank, bei leerem Ergebnis Wiki.</p>
+
+<div class="cols">
+  <div>
+    <h2>4. Beispiel-Fragen</h2>
+    <p><strong>Datenbank:</strong></p>
+    <ul>
+      <li>Wer ist GF bei Hexal?</li>
+      <li>Adresse von Klosterfrau</li>
+      <li>Firmen in Köln</li>
+    </ul>
+    <p><strong>Wiki:</strong></p>
+    <ul>
+      <li>Was steht im Vertrag über …?</li>
+      <li>Brandvoice Hans zu …</li>
+    </ul>
+  </div>
+  <div>
+    <h2>5. Grenzen &amp; Hilfe</h2>
+    <ul>
+      <li>PC des Admins muss laufen</li>
+      <li>Nur ein Gerät gleichzeitig</li>
+      <li>KI kann irren → Quellen prüfen</li>
+      <li>Hilfe: Admin + Screenshot</li>
+    </ul>
+    <p><strong>Mails / WhatsApp / Agenda:</strong> Tab wählen, KI-Entwurf, prüfen. Versand oft nur mit Outlook am PC.</p>
+  </div>
+</div>
+
+<div class="merksatz">
+  <strong>Merksatz:</strong> Tailscale grün → DigiWiki öffnen → Auto-Modus → konkret fragen
+</div>
+
+<p class="footer">
+  Ausführliche Anleitungen im Projekt: Anleitung_Nutzer_Handy.md · Anleitung_Nutzer_Bedienung.md ·
+  Anleitung_PC_und_Handy_Einrichtung_Admin.md (Administrator)
+</p>
+
+</body>
+</html>

@@ -20,6 +20,16 @@ Persönliches Wissens- und CRM-System für DigiBest: semantische Dokumentensuche
 | `config.py` | Pfade und Einstellungen |
 | `start.bat` | Start inkl. Tailscale & Helfer |
 
+## Anleitungen (Dokumentation)
+
+| Datei | Zielgruppe |
+|-------|------------|
+| [Anleitung_Nutzer_Handy.md](Projektdokumente/Anleitung_Nutzer_Handy.md) | Nutzer: Zugang vom Handy (Tailscale) |
+| [Anleitung_Nutzer_Bedienung.md](Projektdokumente/Anleitung_Nutzer_Bedienung.md) | Nutzer: Bedienung, Fragen, Ergebnisse |
+| [Anleitung_Nutzer_Kurzreferenz.md](Projektdokumente/Anleitung_Nutzer_Kurzreferenz.md) | Nutzer: **1-Seiten-Spickzettel** |
+| [Anleitung_Nutzer_Kurzreferenz.html](Projektdokumente/Anleitung_Nutzer_Kurzreferenz.html) | Nutzer: Kurzreferenz **drucken / als PDF** (Strg+P) |
+| [Anleitung_PC_und_Handy_Einrichtung_Admin.md](Projektdokumente/Anleitung_PC_und_Handy_Einrichtung_Admin.md) | Administrator: PC, Tailscale, Start |
+
 ## Hinweise
 
 - `Chroma_DB/` und Laufzeit-JSON (`wiki_stand.json` etc.) sind lokal und nicht im Repo
