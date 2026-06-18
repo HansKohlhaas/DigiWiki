@@ -21,6 +21,6 @@ if ($grandParentName -notmatch '^(powershell|pwsh)$') { exit 1 }
 $workDir = Split-Path -Parent $BatPath
 
 Start-Process -FilePath 'cmd.exe' `
-    -ArgumentList '/k', "set DIGIWIKI_DETACHED=1& cd /d `"$workDir`"& call `"$BatPath`"" `
+    -ArgumentList '/c', "set DIGIWIKI_DETACHED=1& cd /d `"$workDir`"& call `"$BatPath`"" `
     -WindowStyle Normal
 exit 0

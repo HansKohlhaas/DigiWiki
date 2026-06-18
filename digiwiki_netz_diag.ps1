@@ -129,17 +129,16 @@ tailscale netcheck 2>&1 | Select-String -Pattern 'UDP:|IPv4:|Nearest DERP:|Mappi
 
 Write-Host ""
 Write-Host "=== Checkliste Handy (von zuhause) ===" -ForegroundColor Cyan
-Write-Host "1. Tailscale-App: Status 'Verbunden' (gruen) – VOR dem Browser oeffnen"
-Write-Host "2. Exit-Node / 'Use as VPN' AUS"
-Write-Host "3. Android: Einstellungen -> Netzwerk -> Privates DNS -> AUS (nicht Automatisch!)"
-Write-Host "   (Privates DNS 'Automatisch' blockiert MagicDNS -> 'Adresse nicht gefunden')"
+Write-Host "1. Tailscale-App: Status Verbunden (gruen) - VOR dem Browser oeffnen"
+Write-Host "2. Exit-Node / Use as VPN AUS"
+Write-Host "3. Android: Einstellungen -> Netzwerk -> Privates DNS -> AUS"
 Write-Host "4. URL primaer:  https://desktop-velbert....ts.net"
-Write-Host "   URL Fallback: http://TAILSCALE-IP:8501  (wenn DNS nicht geht)"
+Write-Host "   URL Fallback: http://TAILSCALE-IP:8501"
 if ($ip) {
-    Write-Host "                 http://${ip}:8501  <- diese IP jetzt testen" -ForegroundColor Green
+    Write-Host "                 http://${ip}:8501  (diese IP jetzt testen)" -ForegroundColor Green
 }
 Write-Host "5. Akku-Optimierung fuer Tailscale: Uneingeschraenkt"
 Write-Host "6. Bei Timeout: Flugmodus kurz an/aus, Tailscale neu verbinden"
 Write-Host ""
-Write-Host "Diagnose mit Auto-Fix:  powershell -File digiwiki_netz_diag.ps1 -Fix"
+Write-Host 'Diagnose mit Auto-Fix:  powershell -File digiwiki_netz_diag.ps1 -Fix'
 Write-Host ""

@@ -6,7 +6,8 @@ Persönliches Wissens- und CRM-System für DigiBest: semantische Dokumentensuche
 
 1. Python-venv anlegen und Abhängigkeiten installieren
 2. `.env` mit API-Keys anlegen (siehe `.env.example` falls vorhanden)
-3. `start.bat` ausführen → UI unter `http://localhost:8501`
+3. `start.bat` ausführen → UI unter `http://localhost:8501`  
+   (Desktop-Verknüpfung: einmalig `install_desktop_verknuepfung.bat` ausführen)
 4. Handy (Tailscale): MagicDNS-URL aus dem Startfenster
 
 ## Wichtige Dateien

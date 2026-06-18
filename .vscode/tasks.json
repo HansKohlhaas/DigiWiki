@@ -8,7 +8,7 @@
 			"args": [
 				"-NoProfile",
 				"-Command",
-				"Start-Process -FilePath 'cmd.exe' -ArgumentList '/k','start.bat' -WorkingDirectory '${workspaceFolder}' -WindowStyle Normal"
+				"Start-Process -FilePath 'cmd.exe' -ArgumentList '/c','set DIGIWIKI_DETACHED=1&& call start.bat' -WorkingDirectory '${workspaceFolder}' -WindowStyle Normal"
 			],
 			"problemMatcher": [],
 			"group": "build"

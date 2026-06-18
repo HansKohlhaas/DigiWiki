@@ -36,25 +36,49 @@ if not defined DIGIWIKI_DETACHED (
     if not errorlevel 1 exit /b 0
 )
 
-REM --- Bereits aktiv? (ueberspringen mit set DIGIWIKI_FORCE=1) ---
-if not defined DIGIWIKI_FORCE (
-    tasklist /v /FI "WINDOWTITLE eq DigiWiki-Streamlit*" 2>nul | find /I "cmd.exe" >nul
+REM --- Parallelen Start verhindern (Doppel-/Dreifach-Klick, Task + manuell) ---
+powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%digiwiki_start_lock.ps1" >nul 2>&1
+if errorlevel 2 (
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%digiwiki_port_frei.ps1" >nul 2>&1
     if not errorlevel 1 (
         echo.
-        echo [HINWEIS] DigiWiki-Streamlit laeuft bereits.
+        echo [HINWEIS] DigiWiki laeuft bereits.
         echo          Browser: http://localhost:8501
-        echo          Neu starten: altes Fenster schliessen ODER set DIGIWIKI_FORCE=1
+        timeout /t 5 /nobreak >nul
+        start "" "http://localhost:8501"
+        exit /b 0
+    )
+    echo [INFO] Alte Start-Sperre ohne laufenden Server – starte neu ...
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%digiwiki_start_lock.ps1" -Action Release >nul 2>&1
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%digiwiki_start_lock.ps1" >nul 2>&1
+)
+
+REM --- Alte Prozesse beenden (immer zuerst, auch bei Neustart) ---
+echo [INFO] Bereinige alte DigiWiki-Prozesse ...
+for /f "tokens=2 delims==" %%n in ('powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%digiwiki_cleanup.ps1" 2^>nul ^| findstr /B "STOPPED="') do set "CLEANUP_COUNT=%%n"
+if defined CLEANUP_COUNT (
+    if !CLEANUP_COUNT! GTR 0 (
+        echo [OK] !CLEANUP_COUNT! alte Prozess(e^) beendet.
+    ) else (
+        echo [OK] Keine alten Prozesse gefunden.
+    )
+)
+ping 127.0.0.1 -n 3 >nul
+
+REM Port 8501 muss frei sein – sonst zweite Instanz / Connection-Fehler
+powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%digiwiki_port_frei.ps1" >nul 2>&1
+if errorlevel 1 (
+    echo [WARNUNG] Port 8501 noch belegt – zweiter Bereinigungslauf ...
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%digiwiki_cleanup.ps1" >nul 2>&1
+    ping 127.0.0.1 -n 3 >nul
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%digiwiki_port_frei.ps1"
+    if errorlevel 1 (
+        echo [FEHLER] Port 8501 blockiert. Task-Manager: python.exe beenden, dann erneut starten.
+        powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%digiwiki_start_lock.ps1" -Action Release >nul 2>&1
         pause
         exit /b 1
     )
 )
-
-REM --- Alte Prozesse beenden ---
-echo [INFO] Bereinige alte DigiWiki-Prozesse ...
-powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%digiwiki_cleanup.ps1" >nul 2>&1
-taskkill /FI "WINDOWTITLE eq DigiWiki-Streamlit*" /F >nul 2>&1
-REM Alte (haengende) Haupt-Fenster frueherer Starts schliessen (eigenes Fenster ist noch nicht umbenannt)
-taskkill /FI "WINDOWTITLE eq DigiWiki-Haupt*" /F >nul 2>&1
 
 set "INSTANCE_ID=%RANDOM%%RANDOM%"
 title DigiWiki-Haupt-!INSTANCE_ID!
@@ -89,16 +113,37 @@ REM --- Lokale WLAN/Netzwerk-IP ermitteln (fuer PC-Zugriff im eigenen Netz) ---
 set "LAN_IP="
 for /f "delims=" %%i in ('powershell -NoProfile -ExecutionPolicy Bypass -Command "(Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' -and $_.IPAddress -notlike '100.*' } | Sort-Object InterfaceMetric | Select-Object -First 1).IPAddress"') do set "LAN_IP=%%i"
 
-REM --- Helfer (SleepGuard + Tailscale-Keepalive) ---
-start "DigiWiki-Helpers" /MIN powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "%ROOT%digiwiki_helpers.ps1" -WatchPid 0
+REM --- Helfer (SleepGuard + Tailscale-Keepalive, ohne sichtbares Fenster) ---
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process powershell -ArgumentList '-NoProfile','-WindowStyle','Hidden','-ExecutionPolicy','Bypass','-File','%ROOT%digiwiki_helpers.ps1','-WatchPid','0' -WindowStyle Hidden" >nul 2>&1
 
-REM --- Streamlit in eigenem, sichtbarem Fenster ---
+REM --- Streamlit: EINE Instanz im Hintergrund (kein zweites CMD-Fenster) ---
 echo.
 echo [INFO] Starte Streamlit-Web-UI (15_wiki_web_ui.py) ...
-start "DigiWiki-Streamlit" /MIN /D "%ROOT%" cmd /k call "%ROOT%digiwiki_run_streamlit.bat"
+for /f "tokens=1,2 delims==" %%a in ('powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%digiwiki_start_streamlit.ps1" 2^>^&1') do (
+    if /i "%%a"=="STARTED" set "STREAMLIT_PID=%%b"
+    if /i "%%a"=="ERROR" set "STREAMLIT_ERR=%%b"
+)
+if defined STREAMLIT_ERR (
+    if "!STREAMLIT_ERR!"=="PORT_BELEGT" (
+        echo [HINWEIS] Streamlit laeuft bereits auf Port 8501.
+    ) else if "!STREAMLIT_ERR!"=="BEREITS_LAUFEND" (
+        echo [HINWEIS] Streamlit-Prozess laeuft bereits.
+    ) else (
+        echo [FEHLER] Streamlit konnte nicht starten: !STREAMLIT_ERR!
+        echo          Siehe digiwiki_run_streamlit.bat fuer manuellen Start.
+    )
+) else if defined STREAMLIT_PID (
+    echo [OK] Streamlit gestartet ^(PID !STREAMLIT_PID!^)
+)
 
-ping 127.0.0.1 -n 6 >nul
-start "" "http://localhost:8501"
+echo [INFO] Warte auf Streamlit (Port 8501) ...
+powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%digiwiki_warte_port.ps1" -Sekunden 45
+if errorlevel 1 (
+    echo [WARNUNG] Streamlit antwortet noch nicht. Log pruefen oder digiwiki_run_streamlit.bat manuell.
+) else (
+    start "" "http://localhost:8501"
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%digiwiki_start_lock.ps1" -Action Release >nul 2>&1
 
 echo.
 echo ============================================================
@@ -113,17 +158,20 @@ if defined LAN_IP (
     echo     URL: http://!LAN_IP!:8501
 )
 echo.
-echo  HANDY (von zuhause - NUR DIESE URL IM BROWSER^):
-echo     http://!TAILSCALE_IP!:8501
+echo  HANDY (von zuhause^):
+if defined TAILSCALE_HTTPS (
+    echo     PRIMAER: !TAILSCALE_HTTPS!
+    echo     Fallback: http://!TAILSCALE_IP!:8501
+) else (
+    echo     http://!TAILSCALE_IP!:8501
+)
 echo.
-echo  NICHT die https://desktop-velbert... URL nutzen!
-echo  ERR_NAME_NOT_RESOLVED = falscher Hostname / MagicDNS kaputt
-echo.
-echo  Vor dem Oeffnen: Tailscale-App = Verbunden (gruen)
+echo  WICHTIG: Zuerst Tailscale-App oeffnen = Verbunden ^(gruen^)!
 echo  Android: Privates DNS AUS, Akku-Optimierung Tailscale AUS
+echo  Timeout? Flugmodus kurz an/aus, Tailscale neu verbinden, dann URL
 echo.
-echo  Hinweis: Das minimierte Fenster "DigiWiki-Streamlit" haelt den Server.
-echo  Diese Zugangsdaten stehen auch in: digiwiki_zugang.txt
+echo  Hinweis: Streamlit laeuft im Hintergrund (kein zweites Fenster).
+echo  Debug mit sichtbarem Fenster: digiwiki_run_streamlit.bat
 echo ============================================================
 echo.
 
@@ -134,27 +182,30 @@ REM --- Zugangsdaten in Datei sichern (bleibt verfuegbar, auch nachdem dieses Fe
     echo.
     echo PC ^(lokal^):         http://localhost:8501
     if defined LAN_IP echo PC ^(WLAN/Netzwerk^): http://!LAN_IP!:8501  ^(IP: !LAN_IP!^)
-    echo HANDY - NUR DIESE URL ^(Lesezeichen^):
-    echo   http://!TAILSCALE_IP!:8501
+    echo HANDY ^(Lesezeichen^):
+    if defined TAILSCALE_HTTPS echo   PRIMAER: !TAILSCALE_HTTPS!
+    echo   Fallback: http://!TAILSCALE_IP!:8501
     echo.
-    echo NICHT https://desktop-velbert... ^(MagicDNS, bricht alle 10 Min ab^)
-    echo ERR_NAME_NOT_RESOLVED = Hostname-URL benutzt, nicht IP!
-    echo.
-    echo Vorher: Tailscale-App verbunden. Privates DNS AUS.
+    echo Zuerst Tailscale-App = Verbunden ^(gruen^). Privates DNS AUS.
+    echo Bei Timeout: Flugmodus an/aus, Tailscale neu verbinden.
     if defined LAN_IP echo PC ^(WLAN^): http://!LAN_IP!:8501  ^(nur gleiches WLAN^)
 ) > "%ROOT%digiwiki_zugang.txt"
 
+echo  Diese Zugangsdaten stehen auch in: digiwiki_zugang.txt
+
 REM --- Einfache HTML-Weiterleitung fuer Handy-Lesezeichen (ohne DNS) ---
+set "HANDY_LINK=!TAILSCALE_HTTPS!"
+if not defined HANDY_LINK set "HANDY_LINK=http://!TAILSCALE_IP!:8501"
 (
     echo ^<!DOCTYPE html^>
     echo ^<html^>^<head^>^<meta charset="utf-8"^>^<title^>DigiWiki^</title^>^</head^>
     echo ^<body style="font-family:sans-serif;text-align:center;margin-top:3em"^>
     echo ^<h2^>DigiWiki^</h2^>
-    echo ^<p^>^<a href="http://!TAILSCALE_IP!:8501" style="font-size:1.4em"^>App oeffnen^</a^>^</p^>
+    echo ^<p^>^<a href="!HANDY_LINK!" style="font-size:1.4em"^>App oeffnen^</a^>^</p^>
     echo ^<p style="color:#666"^>Tailscale am Handy muss verbunden sein.^</p^>
     echo ^</body^>^</html^>
 ) > "%ROOT%digiwiki_handy.html"
 
 echo [INFO] Dieses Fenster schliesst sich in 15 Sekunden automatisch ...
-timeout /t 15 /nobreak >nul
+ping 127.0.0.1 -n 16 >nul
 exit
