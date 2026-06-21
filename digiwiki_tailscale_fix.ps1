@@ -30,6 +30,22 @@ function Repair-RouteAllStuck {
     }
 }
 
+function Test-ServeWebSocket {
+    # Streamlit braucht WebSocket (/_stcore/stream). Nur HTTP-200 reicht nicht –
+    # sonst laedt die Seite kurz und endet mit "Connection failed / timeout".
+    param([string]$DnsName)
+    if (-not $DnsName) { return $false }
+    try {
+        $out = & curl.exe --max-time 10 -sS -D - -o NUL `
+            -H 'Connection: Upgrade' -H 'Upgrade: websocket' `
+            -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' `
+            "https://$DnsName/_stcore/stream" 2>&1
+        return ($out -match '101 Switching Protocols')
+    } catch {
+        return $false
+    }
+}
+
 function Ensure-TailscaleServe {
     # HTTPS-Proxy im Tailnet: stabiler Remote-Zugriff vom Handy (WebSocket/Mobilfunk).
     param([string]$DnsName)
@@ -39,20 +55,33 @@ function Ensure-TailscaleServe {
     if ($LASTEXITCODE -ne 0 -or -not ($serveStatus -match 'localhost:8501|127\.0\.0\.1:8501')) {
         $needsReset = $true
     } elseif ($DnsName) {
-        # Serve haengt manchmal -> HTTPS-Timeout obwohl http://100.x:8501 geht.
+        $httpOk = $false
         try {
             $null = Invoke-WebRequest -Uri "https://$DnsName" -UseBasicParsing -TimeoutSec 12 -MaximumRedirection 0
-        } catch {
+            $httpOk = $true
+        } catch {}
+        $wsOk = Test-ServeWebSocket -DnsName $DnsName
+        if (-not $httpOk -or -not $wsOk) {
             $needsReset = $true
-            Write-Host '[INFO] Tailscale Serve antwortet nicht – neu einrichten ...'
+            if ($httpOk -and -not $wsOk) {
+                Write-Host '[INFO] Tailscale Serve: HTTP ok, WebSocket defekt (502/Timeout) – neu einrichten ...'
+            } else {
+                Write-Host '[INFO] Tailscale Serve antwortet nicht – neu einrichten ...'
+            }
         }
     }
 
     if ($needsReset) {
         Write-Host '[INFO] Tailscale Serve fuer Port 8501 einrichten (HTTPS Remote) ...'
         tailscale serve reset 2>$null | Out-Null
-        tailscale serve --bg --https=443 http://127.0.0.1:8501 2>$null | Out-Null
+        tailscale serve --bg 8501 2>$null | Out-Null
         Start-Sleep -Seconds 2
+        if ($DnsName -and (Test-ServeWebSocket -DnsName $DnsName)) {
+            Write-Host '[OK] Tailscale Serve + WebSocket bereit.'
+        } elseif ($DnsName) {
+            Write-Host '[WARNUNG] Serve aktiv, WebSocket-Test noch fehlgeschlagen.'
+            Write-Host '           Handy-Fallback: http://TAILSCALE-IP:8501 (siehe digiwiki_zugang.txt)'
+        }
     }
 }
 
@@ -132,6 +161,19 @@ if ($ip -and ($online -eq 'True')) {
     Ensure-TailscaleServe -DnsName $dns
 }
 
+$phone = $null
+$phoneOnline = $false
+$phoneName = ''
+if ($status) {
+    $phone = $status.Peer.PSObject.Properties.Value |
+        Where-Object { $_.OS -match 'android|ios' } |
+        Select-Object -First 1
+    if ($phone) {
+        $phoneName = $phone.HostName
+        $phoneOnline = [string]$phone.Online -eq 'True'
+    }
+}
+
 Write-Host "TAILSCALE_IP=$ip"
 Write-Host "TAILSCALE_DNS=$dns"
 Write-Host "TAILSCALE_ONLINE=$online"
@@ -139,12 +181,33 @@ Write-Host "TAILSCALE_ROUTEALL=$routeAll"
 if ($dns) {
     Write-Host "TAILSCALE_HTTPS=https://$dns"
 }
+if ($ip) {
+    if ($dns) {
+        Write-Host "TAILSCALE_HANDY_URL=https://$dns"
+    } else {
+        Write-Host "TAILSCALE_HANDY_URL=http://${ip}:8501"
+    }
+    Write-Host "TAILSCALE_HANDY_FALLBACK=http://${ip}:8501"
+    if ($dns) {
+        $serveOk = Test-ServeWebSocket -DnsName $dns
+        Write-Host "TAILSCALE_SERVE_OK=$serveOk"
+    }
+}
+if ($phoneName) {
+    Write-Host "PHONE_NAME=$phoneName"
+    Write-Host "PHONE_ONLINE=$phoneOnline"
+}
 
 if ($ip -and ($online -eq 'True')) {
     if ($routeAll -eq 'True') {
         Write-Host '[WARNUNG] RouteAll noch aktiv - Handy-Verbindung kann instabil sein.'
         Write-Host '           In Tailscale-App: Exit-Node / VPN vollstaendig AUS.'
         exit 2
+    }
+    if (-not $phoneOnline) {
+        Write-Host '[WARNUNG] Handy im Tailnet OFFLINE - DigiWiki vom Handy nicht erreichbar.'
+        Write-Host "           Geraet: $phoneName - Tailscale-App am Handy oeffnen (gruen)."
+        exit 3
     }
     Write-Host '[OK] Tailscale bereit.'
     exit 0

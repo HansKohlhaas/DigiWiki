@@ -5,12 +5,23 @@ from langchain_chroma import Chroma
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_classic.chains.combine_documents import create_stuff_documents_chain
 from langchain_classic.chains import create_retrieval_chain
-from config import chroma_db_path_str, ist_gueltiger_wissensbereich, liste_wissensbereiche
+from config import (
+    baue_standard_chroma_filter,
+    baue_verfahren_chroma_filter,
+    chroma_db_path_str,
+    ist_gueltiger_wissensbereich,
+    liste_wissensbereiche,
+)
 from brandvoice import (
     BRANDVOICE_PROFILE,
     _finde_brandvoice_dateien,
     erkenne_brandvoice_wiki_frage,
     lade_brandvoice_kontext_fuer_frage,
+)
+from verfahren_wiki import (
+    erkenne_verfahren_wiki_frage,
+    finde_verfahren_dateien,
+    lade_verfahren_kontext_fuer_frage,
 )
 
 # 1. WICHTIG: ChromaDB Telemetrie hart abschalten (verhindert Netzwerk-Hänger)
@@ -53,12 +64,31 @@ BISHERIGER GESPRÄCHSVERLAUF:
 """
 
 
+VERFAHREN_SYSTEM_PROMPT = """Du beantwortest Fragen zu internen Anleitungen, Einrichtungs- und Schulungsdokumenten von DigiBest.
+Nutze AUSSCHLIESSLICH den bereitgestellten Dokumenttext. Rate nichts dazu.
+Wenn das Thema im Text nicht vorkommt, sage klar: "Dazu liegen mir in der Datenbank aktuell keine Informationen vor."
+Nenne am Ende in Klammern die Quelldatei(en), aus denen du zitiert hast.
+
+ANLEITUNGEN / VERFAHREN (Einrichtung + Schulung):
+{context}
+
+BISHERIGER GESPRÄCHSVERLAUF:
+{chat_historie}
+"""
+
+
 def baue_retriever(vektor_datenbank, bereich=None, max_treffer=5):
     if bereich and bereich != "vollzugriff":
         if not ist_gueltiger_wissensbereich(bereich):
             raise ValueError(f"Unbekannter Wissensbereich: {bereich}. Verfuegbar: {', '.join(liste_wissensbereiche())}")
+        if bereich == "verfahren":
+            return vektor_datenbank.as_retriever(
+                search_kwargs={"k": max_treffer, "filter": baue_verfahren_chroma_filter()}
+            )
         return vektor_datenbank.as_retriever(search_kwargs={"k": max_treffer, "filter": {"bereich": bereich}})
-    return vektor_datenbank.as_retriever(search_kwargs={"k": max_treffer})
+    return vektor_datenbank.as_retriever(
+        search_kwargs={"k": max_treffer, "filter": baue_standard_chroma_filter()}
+    )
 
 
 def _antwort_ohne_treffer(antwort: str) -> bool:
@@ -99,6 +129,37 @@ def frage_brandvoice_dokument(aktuelle_frage, historie_text="", stimme="hans"):
     return {"antwort": antwort, "quellen": quellen}
 
 
+def frage_verfahren_dokument(aktuelle_frage, historie_text=""):
+    """Direkter Pfad: Einrichtung/Schulung lesen statt Vektor-Suche im CRM-Meer."""
+    dateien = finde_verfahren_dateien()
+    kontext, quellen = lade_verfahren_kontext_fuer_frage(aktuelle_frage)
+    if not kontext:
+        if dateien:
+            hinweis = (
+                f"(Verfahren-Dateien gefunden ({len(dateien)}), Text konnte nicht gelesen werden.)"
+            )
+        else:
+            hinweis = "(Keine Anleitungen unter Einrichtung + Schulung im Index gefunden.)"
+        return {
+            "antwort": f"{KEINE_INFO_TEXT}\n\n{hinweis}",
+            "quellen": [],
+        }
+    llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.1, timeout=60, max_retries=1)
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", VERFAHREN_SYSTEM_PROMPT),
+        ("human", "{input}"),
+    ])
+    kette = prompt | llm
+    antwort = kette.invoke({
+        "input": aktuelle_frage,
+        "context": kontext,
+        "chat_historie": historie_text or "(keiner)",
+    }).content
+    if _antwort_ohne_treffer(antwort):
+        return {"antwort": antwort, "quellen": []}
+    return {"antwort": antwort, "quellen": quellen}
+
+
 def frage_das_wiki(aktuelle_frage, historie_text="", bereich=None, max_treffer=5):
     """
     Fragt die Datenbank ab. Akzeptiert optional den bisherigen Gesprächsverlauf.
@@ -108,6 +169,11 @@ def frage_das_wiki(aktuelle_frage, historie_text="", bereich=None, max_treffer=5
         return frage_brandvoice_dokument(
             aktuelle_frage, historie_text=historie_text, stimme=brandvoice_stimme
         )
+
+    if erkenne_verfahren_wiki_frage(aktuelle_frage) or bereich == "verfahren":
+        ergebnis = frage_verfahren_dokument(aktuelle_frage, historie_text=historie_text)
+        if ergebnis.get("quellen") or KEINE_INFO_TEXT not in (ergebnis.get("antwort") or ""):
+            return ergebnis
 
     try:
         embeddings = GoogleGenerativeAIEmbeddings(model="models/gemini-embedding-2")

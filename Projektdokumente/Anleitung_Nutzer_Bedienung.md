@@ -97,6 +97,7 @@ Tippen → **🚀 Ausführen** drücken.
 4. **Enter** oder Button **„Fragen“** drücken
 5. Warten, bis die Antwort da ist
 6. Antwort lesen – bei Wiki-Antworten auch **Quellen** beachten
+7. Optional: **📌 Export markieren** / **👁️ Ausblenden** (unter der Antwort)
 
 ### Wo tippe ich die Frage?
 
@@ -207,7 +208,42 @@ Das erklärt manchmal: Erst kurz „Durchsuche Datenbank …“, dann „wechsle
 
 ---
 
-## 8. Was kann ich fragen? – Übersicht nach Thema
+## 8. Antworten markieren, ausblenden und exportieren
+
+Nach jeder **erfolgreichen** Antwort (Wiki-Text oder SQL-Tabelle) erscheinen **unter der Antwort** zwei Checkboxen nebeneinander:
+
+| Checkbox | Wirkung |
+|----------|---------|
+| **📌 Für Export markieren** | Antwort wird in die **Export-Datei** aufgenommen (Standard: angehakt) |
+| **👁️ Antwort ausblenden** | Antwort **im Chat unsichtbar** — bleibt aber **vollständig in der Export-Datei**, solange exportiert markiert |
+
+### Antwort ausblenden
+
+- Der Chat bleibt übersichtlich, z. B. bei vielen Einzelfragen oder vorübergehend unbrauchbaren Antworten.
+- Statt des Textes sehen Sie: *„Antwort ausgeblendet — bleibt in der Export-Datei erhalten.“*
+- Checkboxen bleiben sichtbar — **Ausblenden** wieder abwählen zum Einblenden.
+
+### Antworten exportieren
+
+1. Nach unten scrollen zum Bereich **„📌 Antworten exportieren (X/Y markiert)“** (unter dem Chat-Eingabefeld).
+2. Optional: **Alle markieren** / **Alle abwählen**.
+3. Optional: **Dokumenttitel** eingeben (sonst schlägt die KI einen Titel vor).
+4. **„📝 Markierte zusammenfassen & speichern“** klicken.
+5. DigiWiki erstellt eine **Markdown-Datei** mit:
+   - **Gesamtzusammenfassung** (KI)
+   - **allen markierten Einzelantworten** inkl. Quellen (auch ausgeblendete!)
+
+**Speicherort:** Ordner `Antworten` im DigiWiki-Projekt (Pfad steht im Export-Bereich).
+
+**Dateiname:** sprechend, z. B. `2026-06-18_wiki-test-vertraege-5-fragen.md`
+
+**Hinweis:** Nur Antworten mit Inhalt (Wiki/SQL-Treffer) können markiert werden. Bei *„Keine Treffer“* ohne Wiki-Fallback gibt es nichts zu exportieren.
+
+**Nach Neustart:** DigiWiki einmal mit `start.bat` neu starten, damit neue Funktionen aktiv sind.
+
+---
+
+## 9. Was kann ich fragen? – Übersicht nach Thema
 
 ### Personen & Kontakte
 
@@ -263,7 +299,7 @@ Das erklärt manchmal: Erst kurz „Durchsuche Datenbank …“, dann „wechsle
 
 ---
 
-## 9. Tipps für **gute** Fragen
+## 10. Tipps für **gute** Fragen
 
 | ✅ Besser | ❌ Schlechter |
 |----------|-------------|
@@ -281,7 +317,7 @@ Das erklärt manchmal: Erst kurz „Durchsuche Datenbank …“, dann „wechsle
 
 ---
 
-## 10. Mit den Ergebnissen arbeiten
+## 11. Mit den Ergebnissen arbeiten
 
 ### Bei Tabellen (Datenbank)
 
@@ -289,7 +325,7 @@ Das erklärt manchmal: Erst kurz „Durchsuche Datenbank …“, dann „wechsle
 |--------|-----------|
 | **Scrollen** | Tabelle horizontal/vertikal wischen (Handy) oder Scrollbalken (PC) |
 | **Kopieren** | Text markieren (am PC einfacher) |
-| **Weiterverwenden** | Screenshot, Copy&Paste in E-Mail/Excel |
+| **Export sammeln** | Mehrere Antworten markieren → **Zusammenfassen & speichern** (Abschnitt 8) |
 | **Anrufen** | Nummer aus Tabelle abtippen – oder Kommando *„Rufe [Name] an“* oben |
 
 DigiWiki speichert Tabellen **nicht automatisch** als Datei. Was Sie brauchen, kopieren Sie selbst.
@@ -311,7 +347,7 @@ DigiWiki speichert Tabellen **nicht automatisch** als Datei. Was Sie brauchen, k
 
 ---
 
-## 11. Bereich „Mails & Kontakte“
+## 12. Bereich „Mails & Kontakte“
 
 ### Neue E-Mail
 
@@ -340,7 +376,7 @@ DigiWiki speichert Tabellen **nicht automatisch** als Datei. Was Sie brauchen, k
 
 ---
 
-## 12. Bereich „Agenda & Notizen“
+## 13. Bereich „Agenda & Notizen“
 
 | Funktion | Beschreibung |
 |----------|--------------|
@@ -353,7 +389,7 @@ DigiWiki speichert Tabellen **nicht automatisch** als Datei. Was Sie brauchen, k
 
 ---
 
-## 13. Spracheingabe (Diktat)
+## 14. Spracheingabe (Diktat)
 
 | Wo | Mikrofon-Symbol 🎤 |
 |----|---------------------|
@@ -367,7 +403,7 @@ DigiWiki speichert Tabellen **nicht automatisch** als Datei. Was Sie brauchen, k
 
 ---
 
-## 14. Was DigiWiki **nicht** kann
+## 15. Was DigiWiki **nicht** kann
 
 | Erwartung | Realität |
 |-----------|----------|
@@ -380,7 +416,7 @@ DigiWiki speichert Tabellen **nicht automatisch** als Datei. Was Sie brauchen, k
 
 ---
 
-## 15. Häufige Meldungen – kurz erklärt
+## 16. Häufige Meldungen – kurz erklärt
 
 | Meldung | Bedeutung |
 |---------|-----------|
@@ -394,7 +430,7 @@ DigiWiki speichert Tabellen **nicht automatisch** als Datei. Was Sie brauchen, k
 
 ---
 
-## 16. Kurz-Checkliste für den Alltag
+## 17. Kurz-Checkliste für den Alltag
 
 **Vor der Nutzung:**
 
@@ -407,6 +443,7 @@ DigiWiki speichert Tabellen **nicht automatisch** als Datei. Was Sie brauchen, k
 - [ ] Konkret formulieren (Firma, Name, Thema)
 - [ ] Auf Antwort-Typ achten (Tabelle **oder** Text)
 - [ ] Quellen bei Wiki-Antworten lesen
+- [ ] Test-/Sammelfragen: markieren → **Antworten exportieren** (Abschnitt 8)
 
 **Danach:**
 
@@ -415,7 +452,7 @@ DigiWiki speichert Tabellen **nicht automatisch** als Datei. Was Sie brauchen, k
 
 ---
 
-## 17. Hilfe holen
+## 18. Hilfe holen
 
 | Problem | An wen? |
 |---------|---------|
@@ -428,7 +465,7 @@ DigiWiki speichert Tabellen **nicht automatisch** als Datei. Was Sie brauchen, k
 
 ---
 
-## 18. Alles auf einer Seite – Merkkarte
+## 19. Alles auf einer Seite – Merkkarte
 
 ```
 ZUGANG:     Tailscale grün → Lesezeichen öffnen
@@ -437,6 +474,8 @@ MODUS:      🎯 Auto (Standard)
 FRAGE:      Konkret tippen oder 🎤 diktieren
 ANTWORT:    Tabelle = Datenbank  |  Text + Quellen = Wiki
 NACHFRAGEN: Im gleichen Chat möglich
+EXPORT:     📌 markieren → Zusammenfassen & speichern → Ordner Antworten
+AUSBLENDEN: 👁️ nur Anzeige — Export bleibt vollständig
 RESET:      Chat-Verlauf leeren
 GRENZEN:    Nur Firmenwissen, PC muss laufen, KI prüfen!
 ```

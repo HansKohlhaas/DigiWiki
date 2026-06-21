@@ -42,9 +42,10 @@ if errorlevel 2 (
     powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%digiwiki_port_frei.ps1" >nul 2>&1
     if not errorlevel 1 (
         echo.
-        echo [HINWEIS] DigiWiki laeuft bereits.
-        echo          Browser: http://localhost:8501
-        timeout /t 5 /nobreak >nul
+        echo [HINWEIS] DigiWiki laeuft bereits - pruefe/repariere Verbindung ...
+        powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%digiwiki_keepalive.ps1" -Quiet
+        powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%digiwiki_start_helper.ps1" >nul 2>&1
+        timeout /t 3 /nobreak >nul
         start "" "http://localhost:8501"
         exit /b 0
     )
@@ -89,15 +90,25 @@ echo [INFO] Tailscale vorbereiten ...
 set "TAILSCALE_IP="
 set "TAILSCALE_DNS="
 set "TAILSCALE_HTTPS="
+set "TAILSCALE_HANDY_URL="
 set "TAILSCALE_ONLINE=False"
 for /f "tokens=1,* delims==" %%a in ('powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%digiwiki_tailscale_fix.ps1"') do (
     if /i "%%a"=="TAILSCALE_IP" set "TAILSCALE_IP=%%b"
     if /i "%%a"=="TAILSCALE_DNS" set "TAILSCALE_DNS=%%b"
     if /i "%%a"=="TAILSCALE_HTTPS" set "TAILSCALE_HTTPS=%%b"
+    if /i "%%a"=="TAILSCALE_HANDY_URL" set "TAILSCALE_HANDY_URL=%%b"
     if /i "%%a"=="TAILSCALE_ONLINE" set "TAILSCALE_ONLINE=%%b"
 )
 
-if not defined TAILSCALE_IP set "TAILSCALE_IP=100.116.74.108"
+if not defined TAILSCALE_IP (
+    echo [WARNUNG] Tailscale-IP nicht ermittelt – Handy-Zugriff evtl. nicht moeglich.
+) else if not defined TAILSCALE_HANDY_URL (
+    if defined TAILSCALE_HTTPS (
+        set "TAILSCALE_HANDY_URL=!TAILSCALE_HTTPS!"
+    ) else (
+        set "TAILSCALE_HANDY_URL=http://!TAILSCALE_IP!:8501"
+    )
+)
 
 echo [OK] Tailscale-IP: !TAILSCALE_IP!
 if defined TAILSCALE_DNS echo [OK] MagicDNS: !TAILSCALE_DNS!
@@ -113,8 +124,8 @@ REM --- Lokale WLAN/Netzwerk-IP ermitteln (fuer PC-Zugriff im eigenen Netz) ---
 set "LAN_IP="
 for /f "delims=" %%i in ('powershell -NoProfile -ExecutionPolicy Bypass -Command "(Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' -and $_.IPAddress -notlike '100.*' } | Sort-Object InterfaceMetric | Select-Object -First 1).IPAddress"') do set "LAN_IP=%%i"
 
-REM --- Helfer (SleepGuard + Tailscale-Keepalive, ohne sichtbares Fenster) ---
-powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process powershell -ArgumentList '-NoProfile','-WindowStyle','Hidden','-ExecutionPolicy','Bypass','-File','%ROOT%digiwiki_helpers.ps1','-WatchPid','0' -WindowStyle Hidden" >nul 2>&1
+REM --- Helfer (SleepGuard + Tailscale/Streamlit-Watchdog, max. 1 Instanz) ---
+powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%digiwiki_start_helper.ps1" >nul 2>&1
 
 REM --- Streamlit: EINE Instanz im Hintergrund (kein zweites CMD-Fenster) ---
 echo.
@@ -158,53 +169,30 @@ if defined LAN_IP (
     echo     URL: http://!LAN_IP!:8501
 )
 echo.
-echo  HANDY (von zuhause^):
+echo  HANDY (von zuhause - Tailscale verbunden^):
 if defined TAILSCALE_HTTPS (
-    echo     PRIMAER: !TAILSCALE_HTTPS!
+    echo     PRIMAER:  !TAILSCALE_HTTPS!
     echo     Fallback: http://!TAILSCALE_IP!:8501
 ) else (
-    echo     http://!TAILSCALE_IP!:8501
+    echo     PRIMAER:  !TAILSCALE_HANDY_URL!
 )
+echo     ^(In Chrome oeffnen – keine Link-Vorschau/WhatsApp-Vorschau^)
 echo.
 echo  WICHTIG: Zuerst Tailscale-App oeffnen = Verbunden ^(gruen^)!
+echo  Diese IP-URL als Lesezeichen speichern ^(digiwiki_zugang.txt^).
 echo  Android: Privates DNS AUS, Akku-Optimierung Tailscale AUS
-echo  Timeout? Flugmodus kurz an/aus, Tailscale neu verbinden, dann URL
 echo.
 echo  Hinweis: Streamlit laeuft im Hintergrund (kein zweites Fenster).
 echo  Debug mit sichtbarem Fenster: digiwiki_run_streamlit.bat
+echo  Keepalive-Task (empfohlen): install_keepalive_task.bat
 echo ============================================================
 echo.
 
-REM --- Zugangsdaten in Datei sichern (bleibt verfuegbar, auch nachdem dieses Fenster schliesst) ---
-(
-    echo DigiWiki - Zugang
-    echo Stand: %date% %time%
-    echo.
-    echo PC ^(lokal^):         http://localhost:8501
-    if defined LAN_IP echo PC ^(WLAN/Netzwerk^): http://!LAN_IP!:8501  ^(IP: !LAN_IP!^)
-    echo HANDY ^(Lesezeichen^):
-    if defined TAILSCALE_HTTPS echo   PRIMAER: !TAILSCALE_HTTPS!
-    echo   Fallback: http://!TAILSCALE_IP!:8501
-    echo.
-    echo Zuerst Tailscale-App = Verbunden ^(gruen^). Privates DNS AUS.
-    echo Bei Timeout: Flugmodus an/aus, Tailscale neu verbinden.
-    if defined LAN_IP echo PC ^(WLAN^): http://!LAN_IP!:8501  ^(nur gleiches WLAN^)
-) > "%ROOT%digiwiki_zugang.txt"
+REM --- Zugangsdaten fuer Handy-Lesezeichen ---
+powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%digiwiki_write_zugang.ps1" -TailscaleIp "!TAILSCALE_IP!" -TailscaleHttps "!TAILSCALE_HTTPS!" -LanIp "!LAN_IP!" -Root "%ROOT%" >nul 2>&1
 
 echo  Diese Zugangsdaten stehen auch in: digiwiki_zugang.txt
-
-REM --- Einfache HTML-Weiterleitung fuer Handy-Lesezeichen (ohne DNS) ---
-set "HANDY_LINK=!TAILSCALE_HTTPS!"
-if not defined HANDY_LINK set "HANDY_LINK=http://!TAILSCALE_IP!:8501"
-(
-    echo ^<!DOCTYPE html^>
-    echo ^<html^>^<head^>^<meta charset="utf-8"^>^<title^>DigiWiki^</title^>^</head^>
-    echo ^<body style="font-family:sans-serif;text-align:center;margin-top:3em"^>
-    echo ^<h2^>DigiWiki^</h2^>
-    echo ^<p^>^<a href="!HANDY_LINK!" style="font-size:1.4em"^>App oeffnen^</a^>^</p^>
-    echo ^<p style="color:#666"^>Tailscale am Handy muss verbunden sein.^</p^>
-    echo ^</body^>^</html^>
-) > "%ROOT%digiwiki_handy.html"
+echo  Handy-Lesezeichen-Datei: digiwiki_handy.html
 
 echo [INFO] Dieses Fenster schliesst sich in 15 Sekunden automatisch ...
 ping 127.0.0.1 -n 16 >nul

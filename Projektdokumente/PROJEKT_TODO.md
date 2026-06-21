@@ -1,61 +1,25 @@
 # DigiBest Wiki – To-do-Liste
 
-**Stand:** 16.06.2026  
+**Stand:** 17.06.2026  
 **Priorität:** 🔴 hoch · 🟡 mittel · 🟢 niedrig
 
 ---
 
 ## 🔴 Sofort / Nächste Session
 
-- [ ] **Uncommittete Änderungen committen und zu GitHub pushen**  
-  Enthält: Relationsschicht (`db_*.csv`, `sql_db_meta.py`), UI-Einbindung, Status/TODO-Docs.  
-  Branch ist 2 Commits vor `origin/main`; `main` evtl. geschützt → PR falls Push blockiert.
-
-- [ ] **Streamlit neu starten** und SQL-Testfragen durchspielen (siehe `PROJEKT_STATUS.md` §8).
-
-- [ ] **`data_dictionary.csv` bereinigen**  
-  - Encoding konsistent (UTF-8)  
-  - `abdaartikel` vollständig dokumentieren  
-  - `[SUCH]` / `[LEER]`-Tags setzen  
-  - Falschen FK korrigieren: `Datei_Index.Anbieter_ID` → `stammdatenindustrie.kundennumm` (nicht `ID`)
+- [ ] **`web_cache` in Access** statt `live_web_cache.json` (Roadmap Phase B)
+- [ ] **KI-Synthese erweitern** — alle Firmen-Fragetypen, nicht nur Produkte/Briefing
+- [ ] **Wiki-Wächter vollständig laufen lassen** — CRM-MD aus Chroma entfernen (~4200 Einträge)
+- [ ] **`data_dictionary.csv` bereinigen** — UTF-8, `abdaartikel` vollständig, FK korrigieren
 
 ---
 
-## 🟡 Kurzfristig (Relationsschicht & SQL)
+## 🟡 Kurzfristig
 
-- [ ] **`sql_frage_katalog.py` mit `db_joins.csv` synchron halten**  
-  Manuelle JOIN-Regeln weiter reduzieren; CSV als Single Source of Truth.
-
-- [ ] **Weitere Tabellen/JOINs ergänzen** falls in Access-Schema vorhanden, aber noch nicht in CSVs.
-
-- [ ] **Semantische Aliase erweitern** (`SEMANTISCHE_FELDALIASE` in `sql_frage_katalog.py`)  
-  z. B. D2P, Veredelung, Narrativ, Sortiment – nach echten Nutzerfragen.
-
-- [ ] **SQL-Fehlerprotokoll** (optional): fehlgeschlagene Fragen + generiertes SQL loggen für Nachbesserung.
-
-- [ ] **Klassifikator mit `db_tabellen.csv` anreichern**  
-  `Typische_Fragentypen` als Hinweis für `klassifiziere_chat_frage()`.
-
----
-
-## 🟡 Kurzfristig (Wiki & UI)
-
-- [ ] **Wiki-Antwortqualität** mit verschiedenen Wissensbereichen testen.
-
-- [ ] **Performance Chroma/Vektor-Suche** (Roadmap Phase 4) – Batch-Größe, Caching prüfen.
-
-- [ ] **Mikro/Diktat** auf Handy unter Tailscale testen (Browser-Berechtigungen).
-
----
-
-## 🟡 Infrastruktur & Handy
-
-- [ ] **Tailscale-Stabilität langfristig**  
-  - Handy: Akku-Optimierung für Tailscale deaktivieren  
-  - Lesezeichen nur IP-URL  
-  - `digiwiki_handy.html` / `digiwiki_zugang.txt` aktuell halten
-
-- [ ] **Serve-Health-Check** regelmäßig via `digiwiki_tailscale_fix.ps1` oder `start.bat`.
+- [ ] Phase D: Personen aus Web/MD → CRM-Vorschlag + UI „In CRM übernehmen“
+- [ ] Regressionstest-Matrix (20 Kaskaden- + 20 Wiki-Fragen)
+- [ ] `sql_frage_katalog.py` mit `db_joins.csv` synchron halten
+- [ ] Tailscale Akku-Optimierung am Handy dauerhaft deaktivieren
 
 ---
 
@@ -84,6 +48,16 @@
 
 ## Erledigt (Referenz)
 
+- [x] Wissens-Kaskade: `wissens_kaskade.py`, Stufen 1–4
+- [x] Live-Web: `firmen_live_recherche.py` + Cache JSON
+- [x] MD-Fallback: `firmen_md_fallback.py` gezielt per kundennumm
+- [x] KI-Synthese: `orakel_synthese.py`
+- [x] Folgefragen: `frage_kontext.py`
+- [x] Produkte via `abdaartikel` JOIN `anbieternummer`
+- [x] CRM-MD aus Chroma (`CHROMA_EXCLUDE_CRM_MD`, Wächter)
+- [x] Verfahren-Wiki: `verfahren_wiki.py`
+- [x] Handy-Keepalive-Task + Single-Session parallel
+- [x] Schulungsdoku: Technik, Bedienung, Roadmap
 - [x] Wiki-RAG in Web-UI (`frage_das_wiki`, Wissensbereich-Dropdown)
 - [x] Chat Auto-Routing SQL → Wiki
 - [x] `sql_frage_katalog.py` mit 11 SQL-Fragetypen

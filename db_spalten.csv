@@ -10,8 +10,8 @@ stammdatenindustrie;produktschwerpunkt;str;Sortiment_Produkte;Freitext;Welche Pr
 stammdatenindustrie;Kategorie;str;Marktsegment;Kategorietext;Angebotskategorie / Sortimentskategorie (Kurzform);[SUCH];;LIKE '%Allergie%' etc.
 stammdatenindustrie;ekategorie;str;Marktsegment;Freitext;Detailbeschreibung der Angebotskategorie;[SUCH];;Freitext-Ergaenzung zu Kategorie
 stammdatenindustrie;anbieternummer;int;Identifikation;FK;"ABDA-Anbieternummer; Verknuepfung zum Produktkatalog";[FK];abdaartikel.anbieter_nr;JOIN abdaartikel ON anbieter_nr = anbieternummer fuer Artikel/Produkte
-stammdatenindustrie;nama;str;Identifikation;Kategorietext;Erstteil Firmenname / Anbietername (Hauptsuchfeld fuer Firmen);[SUCH];;Primaeres Suchfeld fuer Firmennamen: LIKE '%Hexal%'
-stammdatenindustrie;nameb;str;Identifikation;Kategorietext;Zweitteil Firmenname / Ergaenzung zum Anbieternamen;[SUCH];;"Oft leer; bei Suche nama UND nameb mit OR verknuepfen"
+stammdatenindustrie;nama;str;Identifikation;Kategorietext;Erstteil Firmenname / Anbietername (Hauptsuchfeld fuer Firmen);[SUCH];;Suche ueber nama & nameb verketten – nicht nur nama
+stammdatenindustrie;nameb;str;Identifikation;Kategorietext;Zweitteil Firmenname / Ergaenzung zum Anbieternamen;[SUCH];;Mit nama verketten: IIf(nama,'') & IIf(nameb,'') LIKE '%Suchbegriff%'
 stammdatenindustrie;kurzname;str;Identifikation;Kategorietext;Kurzbezeichnung der Firma;[SUCH];;Alternative zu nama fuer Abkuerzungen
 stammdatenindustrie;LKZ;str;Adresse;Kategorietext;Laenderkennzeichen (z.B. DE, AT, CH);[FILTER];;Laenderfilter: LKZ = 'DE' oder LIKE 'D%'
 stammdatenindustrie;plz;str;Adresse;Kategorietext;Postleitzahl des Firmensitzes;[FILTER];;Exakt oder Prefix: plz LIKE '40%'

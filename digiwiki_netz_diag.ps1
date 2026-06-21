@@ -75,9 +75,28 @@ if ($LASTEXITCODE -eq 0 -and $serve) {
     Write-Host "[WARNUNG] Tailscale Serve nicht aktiv."
     Write-Host "          Ohne Serve: http://TAILSCALE-IP:8501 (anfaellig bei Mobilfunk/WebSocket)"
     if ($Fix -and $status -and $status.Self.Online) {
-        tailscale serve --bg --https=443 http://127.0.0.1:8501 2>$null | Out-Null
+        tailscale serve reset 2>$null | Out-Null
+        tailscale serve --bg 8501 2>$null | Out-Null
         Write-Host "[FIX] tailscale serve eingerichtet."
         tailscale serve status 2>&1
+    }
+}
+
+Show-Section "5b) WebSocket via Serve (Streamlit-Pflicht)"
+if ($status -and $status.Self.DNSName) {
+    $dnsTest = ($status.Self.DNSName -replace '\.$', '')
+    $wsOut = & curl.exe --max-time 10 -sS -D - -o NUL `
+        -H 'Connection: Upgrade' -H 'Upgrade: websocket' `
+        -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' `
+        "https://$dnsTest/_stcore/stream" 2>&1
+    if ($wsOut -match '101 Switching Protocols') {
+        Write-Host "[OK] WebSocket via Serve (101 Switching Protocols)"
+    } elseif ($wsOut -match '502') {
+        Write-Host "[FEHLER] WebSocket via Serve: 502 Bad Gateway"
+        Write-Host "         Seite laedt kurz, dann 'Connection failed / timeout'."
+        Write-Host "         Fix: digiwiki_handy_reparieren.bat oder start.bat"
+    } else {
+        Write-Host "[WARNUNG] WebSocket-Test unklar - Serve ggf. neu setzen."
     }
 }
 

@@ -30,6 +30,8 @@
 | 4 | **Enter** / **Fragen** |
 | 5 | Antwort lesen |
 
+**Export:** Unter Antwort → **📌 markieren** · **👁️ ausblenden** (nur Anzeige) · unten **Zusammenfassen & speichern** → Ordner `Antworten`
+
 **Verlauf löschen:** System-Status → *Chat-Verlauf leeren*
 
 ---

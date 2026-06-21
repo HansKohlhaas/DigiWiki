@@ -1,14 +1,18 @@
 import streamlit as st
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 # ==========================================
-# SINGLE-SESSION-TAKEOVER
-# Eine neu gestartete Session uebernimmt die Kontrolle: alle vorherigen
-# Sessions werden entwertet und (best effort) serverseitig sofort beendet.
-# So bleibt immer nur die zuletzt geoeffnete Verbindung (PC ODER Handy) aktiv.
+# SINGLE-SESSION-TAKEOVER (optional, standard: AUS)
+# Nur aktiv wenn DIGIWIKI_SINGLE_SESSION=true in .env
 # ==========================================
 import os as _os
 import uuid as _uuid
 import tempfile as _tempfile
+
+from config import SINGLE_SESSION_TAKEOVER
 
 _AKTIVE_SESSION_DATEI = _os.path.join(_tempfile.gettempdir(), "digiwiki_active_session.token")
 
@@ -51,19 +55,18 @@ def _aktives_token_schreiben(token):
         pass
 
 
-if "session_token" not in st.session_state:
-    # Neue Session -> uebernimmt: vorherige Sessions beenden + neues Token setzen.
-    st.session_state.session_token = _uuid.uuid4().hex
-    _beende_andere_sessions(_eigene_session_id())
-    _aktives_token_schreiben(st.session_state.session_token)
-elif _aktives_token_lesen() not in ("", st.session_state.session_token):
-    # Eine neuere Session hat uebernommen -> diese Session leeren und stoppen.
-    st.session_state.clear()
-    st.warning(
-        "Diese Sitzung wurde in einem anderen Fenster oder auf einem anderen Geraet "
-        "uebernommen. Bitte die Seite neu laden, um hier weiterzuarbeiten."
-    )
-    st.stop()
+if SINGLE_SESSION_TAKEOVER:
+    if "session_token" not in st.session_state:
+        st.session_state.session_token = _uuid.uuid4().hex
+        _beende_andere_sessions(_eigene_session_id())
+        _aktives_token_schreiben(st.session_state.session_token)
+    elif _aktives_token_lesen() not in ("", st.session_state.session_token):
+        st.session_state.clear()
+        st.warning(
+            "Diese Sitzung wurde in einem anderen Fenster oder auf einem anderen Geraet "
+            "uebernommen. Bitte die Seite neu laden, um hier weiterzuarbeiten."
+        )
+        st.stop()
 
 # --- Initialisierung des Session-States (Sicherheits-Block) ---
 if "router_state" not in st.session_state:
@@ -86,6 +89,14 @@ if "kontakt_historie" not in st.session_state:
     st.session_state.kontakt_historie = []
 if "letzter_kontakt" not in st.session_state:
     st.session_state.letzter_kontakt = ""
+if "chat_qa_paare" not in st.session_state:
+    st.session_state.chat_qa_paare = []
+if "chat_qa_naechste_id" not in st.session_state:
+    st.session_state.chat_qa_naechste_id = 0
+if "frage_kontext" not in st.session_state:
+    from frage_kontext import FrageKontext
+
+    st.session_state.frage_kontext = FrageKontext().to_dict()
 import re
 import os
 import io
@@ -106,6 +117,7 @@ from dotenv import load_dotenv
 from urllib.parse import quote
 from config import (
     ACCESS_DB_PATH,
+    ANTWORTEN_DIR,
     DICTIONARY_PATH,
     MAIL_DOWNLOAD_DIR,
     MAIL_UPLOAD_DIR,
@@ -118,16 +130,34 @@ from config import (
     liste_wissensbereiche,
 )
 from ask_wiki import frage_das_wiki
+from antworten_export import exportiere_markierte_paare
 from brandvoice import BRANDVOICE_RADIO, brandvoice_auswahl_block, brandvoice_radio_labels
 from sql_frage_katalog import (
     baue_klassifikator_leitfaden,
     baue_sql_feld_leitfaden,
     baue_semantik_leitfaden,
+    baue_direkt_sql_folgefrage,
+    baue_direkt_sql_firma_produkte,
+    bereinige_access_sql,
+    firma_suche_like,
     ist_offensichtliche_wiki_frage,
+    ist_verfahren_wiki_frage,
 )
 from sql_db_meta import baue_db_meta_leitfaden
-
-load_dotenv()
+from wissens_kaskade import (
+    AUTO_MODUS_LABEL,
+    erlaube_wiki_fallback,
+    kaskaden_quellen_caption,
+    meldung_sql_leer,
+)
+from firmen_live_recherche import (
+    extrahiere_firmen_suchbegriff,
+    firmen_live_recherche,
+    ist_einzel_firma_live_web_frage,
+    suche_firma_in_db,
+)
+from firmen_md_fallback import firmen_md_fallback, ist_einzel_firma_md_fallback_frage
+from orakel_synthese import erzeuge_firmen_synthese, soll_synthese_anwenden, synthese_aktiv
 
 # ==========================================
 # 1. SEITEN-KONFIGURATION (Mobile First)
@@ -206,15 +236,12 @@ def _baue_namen_filter(teile, vorname_feld, nachname_feld):
 def _baue_firma_filter(teile, stamm_alias="s"):
     if not teile:
         return "1=0"
-    teile_filter = []
-    for t in teile:
-        e = _sql_escape(t)
-        teile_filter.append(f"{stamm_alias}.nama LIKE '%{e}%'")
+    teile_filter = [firma_suche_like(t, alias=stamm_alias) for t in teile]
     return "(" + " OR ".join(teile_filter) + ")"
 
 
 def _baue_kontakt_suchfilter(teile, vorname_feld, nachname_feld, stamm_alias="s"):
-    """Name (Vor-/Nachname) oder Firma über stammdatenindustrie.nama."""
+    """Name (Vor-/Nachname) oder Firma über nama & nameb."""
     name = _baue_namen_filter(teile, vorname_feld, nachname_feld)
     firma = _baue_firma_filter(teile, stamm_alias=stamm_alias)
     return f"(({name}) OR ({firma}))"
@@ -544,8 +571,7 @@ def lade_whitelist():
         df = pd.read_sql("SELECT * FROM Whitelist_Kontakte", conn)
         conn.close()
         return df
-    except Exception as e:
-        st.error(f"Datenbank-Fehler beim Laden der Whitelist: {e}")
+    except Exception:
         return pd.DataFrame()
 
 # ==========================================
@@ -611,6 +637,210 @@ def baue_chat_historie_text(historie, max_eintraege=10):
     return "\n".join(zeilen)
 
 
+def chat_qa_hinzufuegen(frage, antwort, typ, quellen=None, sql_markdown=None):
+    """Speichert strukturiertes Q&A fuer Markierung und Export. Gibt qa_id zurueck."""
+    qa_id = st.session_state.chat_qa_naechste_id
+    st.session_state.chat_qa_naechste_id += 1
+    st.session_state.chat_qa_paare.append(
+        {
+            "id": qa_id,
+            "frage": str(frage or "").strip(),
+            "antwort": str(antwort or "").strip(),
+            "typ": typ,
+            "quellen": list(quellen or []),
+            "sql_markdown": sql_markdown,
+            "markiert": True,
+            "zeit": datetime.now().isoformat(timespec="seconds"),
+        }
+    )
+    st.session_state[f"qa_cb_{qa_id}"] = True
+    st.session_state[f"qa_hide_{qa_id}"] = False
+    return qa_id
+
+
+def qa_checkbox_key(qa_id):
+    return f"qa_cb_{qa_id}"
+
+
+def qa_hide_key(qa_id):
+    return f"qa_hide_{qa_id}"
+
+
+def qa_ist_markiert(qa_id):
+    return bool(st.session_state.get(qa_checkbox_key(qa_id), True))
+
+
+def qa_ist_ausgeblendet(qa_id):
+    return bool(st.session_state.get(qa_hide_key(qa_id), False))
+
+
+def qa_markierte_paare():
+    return [p for p in st.session_state.chat_qa_paare if qa_ist_markiert(p["id"])]
+
+
+def qa_setze_alle_markiert(markiert: bool):
+    for p in st.session_state.chat_qa_paare:
+        p["markiert"] = markiert
+        st.session_state[qa_checkbox_key(p["id"])] = markiert
+
+
+def zeige_qa_export_panel():
+    """Export-Bereich unterhalb des Chats."""
+    anzahl = len(st.session_state.chat_qa_paare)
+    markiert_n = len(qa_markierte_paare())
+    titel = f"📌 Antworten exportieren ({markiert_n}/{anzahl} markiert)"
+    with st.expander(titel, expanded=False):
+        if anzahl == 0:
+            st.info(
+                "Stellen Sie zuerst eine Frage. **Unter jeder Antwort** erscheinen dann "
+                "die Checkboxen **„Für Export markieren“** und **„Antwort ausblenden“**."
+            )
+            return
+
+        st.caption(f"Speicherort: `{ANTWORTEN_DIR}`")
+        c_all, c_none = st.columns(2)
+        with c_all:
+            if st.button("Alle markieren", key="qa_mark_all", use_container_width=True):
+                qa_setze_alle_markiert(True)
+                st.rerun()
+        with c_none:
+            if st.button("Alle abwählen", key="qa_mark_none", use_container_width=True):
+                qa_setze_alle_markiert(False)
+                st.rerun()
+
+        for p in st.session_state.chat_qa_paare:
+            icon = "☑" if qa_ist_markiert(p["id"]) else "☐"
+            hide = " 👁️" if qa_ist_ausgeblendet(p["id"]) else ""
+            frage_kurz = p.get("frage", "")[:100]
+            st.caption(f"{icon}{hide} {frage_kurz}")
+
+        export_titel = st.text_input(
+            "Dokumenttitel (optional, sonst KI-Vorschlag)",
+            key="qa_export_titel",
+            placeholder="z. B. Wiki-Test Verträge Juni 2026",
+        )
+        if st.button("📝 Markierte zusammenfassen & speichern", type="primary", key="qa_export_btn"):
+            markiert = qa_markierte_paare()
+            if not markiert:
+                st.warning("Bitte mindestens eine Antwort markieren (Checkbox unter der Antwort).")
+            else:
+                with st.spinner("Erstelle Zusammenfassung und speichere Dokument …"):
+                    try:
+                        pfad, doc_titel = exportiere_markierte_paare(
+                            markiert,
+                            titel_manuell=export_titel,
+                            ki_titel=not bool(export_titel.strip()),
+                        )
+                        st.success(f"Gespeichert: **{pfad.name}**")
+                        st.caption(f"Pfad: `{pfad}`")
+                        st.info(f"Dokumenttitel: *{doc_titel}*")
+                    except Exception as e:
+                        st.error(f"Export fehlgeschlagen: {e}")
+
+
+def _qa_paar(qa_id):
+    for paar in st.session_state.chat_qa_paare:
+        if paar.get("id") == qa_id:
+            return paar
+    return None
+
+
+def _zeige_assistent_inhalt(r, qa_id):
+    """Volle Antwort aus Historie oder gespeichertem Q&A-Paar rendern."""
+    paar = _qa_paar(qa_id) if qa_id is not None else None
+    if paar and paar.get("sql_markdown"):
+        st.markdown(paar["sql_markdown"])
+        return
+    if paar and paar.get("antwort") and paar.get("typ") in ("live_web", "wiki", "wiki_fallback"):
+        st.markdown(paar["antwort"])
+        return
+    st.markdown(r.get("text") or "")
+
+
+def zeige_qa_aktionszeile(qa_id):
+    """Export-Markierung und Ausblenden direkt unter einer Antwort."""
+    if qa_id is None:
+        return
+    if qa_checkbox_key(qa_id) not in st.session_state:
+        st.session_state[qa_checkbox_key(qa_id)] = True
+    if qa_hide_key(qa_id) not in st.session_state:
+        st.session_state[qa_hide_key(qa_id)] = False
+    col_export, col_hide = st.columns(2)
+    with col_export:
+        st.checkbox("📌 Für Export markieren", key=qa_checkbox_key(qa_id))
+    with col_hide:
+        st.checkbox("👁️ Antwort ausblenden", key=qa_hide_key(qa_id))
+
+
+def zeige_qa_markierung_checkbox(qa_id):
+    """Legacy-Aufruf – Checkboxen nur noch im Verlauf (keine Doppel-Widgets)."""
+    return
+
+
+def zeige_chat_verlauf_mit_markierung():
+    """Chat-Verlauf; unter exportierbaren Antworten Markierung und Ausblenden."""
+    gesehene_qa: set[int] = set()
+    assistant_idx = 0
+    for r in st.session_state.chat_historie:
+        with st.chat_message(r["rolle"]):
+            qa_id = None
+            if r.get("rolle") == "assistant":
+                qa_id = r.get("qa_id")
+                if qa_id is None and assistant_idx < len(st.session_state.chat_qa_paare):
+                    qa_id = st.session_state.chat_qa_paare[assistant_idx].get("id")
+                assistant_idx += 1
+
+            if r.get("rolle") == "assistant" and qa_id is not None and qa_ist_ausgeblendet(qa_id):
+                with st.expander("👁️ Antwort einblenden", expanded=False):
+                    _zeige_assistent_inhalt(r, qa_id)
+            else:
+                _zeige_assistent_inhalt(r, qa_id)
+
+            if r.get("rolle") == "assistant" and qa_id is not None and qa_id not in gesehene_qa:
+                gesehene_qa.add(qa_id)
+                zeige_qa_aktionszeile(qa_id)
+
+
+def sql_df_zu_markdown(df, max_zeilen=40):
+    """DataFrame als Markdown-Tabelle fuer Export."""
+    if df is None or df.empty:
+        return ""
+    auszug = df.head(max_zeilen)
+    try:
+        md = auszug.to_markdown(index=False)
+    except Exception:
+        md = auszug.to_string(index=False)
+    if len(df) > max_zeilen:
+        md += f"\n\n*(… {len(df) - max_zeilen} weitere Zeilen nicht exportiert)*"
+    return md
+
+
+def _versuche_ki_synthese(
+    frage: str,
+    sql_df=None,
+    kundennumm: str = "",
+    firmen_such: str = "",
+    web_text: str = "",
+    md_text: str = "",
+):
+    """Stufe 4: Briefing aus SQL + Stamm (+ optional Web/MD)."""
+    if not synthese_aktiv():
+        return None
+    if sql_df is not None and not sql_df.empty and not soll_synthese_anwenden(frage, sql_df):
+        if not web_text.strip() and not md_text.strip():
+            return None
+    if (sql_df is None or sql_df.empty) and not web_text.strip() and not md_text.strip():
+        return None
+    return erzeuge_firmen_synthese(
+        frage,
+        sql_df=sql_df,
+        kundennumm=kundennumm,
+        firmen_such=firmen_such,
+        web_text=web_text,
+        md_text=md_text,
+    )
+
+
 def klassifiziere_chat_frage(frage):
     """Auto-Routing: SQL (strukturierte Daten) vs. Wiki-RAG (Dokumentenwissen)."""
     if ist_offensichtliche_wiki_frage(frage):
@@ -648,8 +878,16 @@ def ermittle_frage_typ(frage, modus, expliziter_typ=None):
     return klassifiziere_chat_frage(frage)
 
 
-def uebersetze_frage_in_sql(nutzer_frage, schema_text, dictionary_csv):
+def effektiver_wiki_bereich(frage: str, gewaehlt: str | None) -> str | None:
+    """Verfahrensfragen fokussieren auf Einrichtung/Schulung-Anleitungen."""
+    if ist_verfahren_wiki_frage(frage) and gewaehlt in (None, "vollzugriff"):
+        return "verfahren"
+    return gewaehlt
+
+
+def uebersetze_frage_in_sql(nutzer_frage, schema_text, dictionary_csv, kontext_block=""):
     client = OpenAI()
+    kontext_teil = f"\n    {kontext_block}\n" if kontext_block else ""
     system_prompt = f"""
     Du bist ein SQL-Experte für Microsoft Access (Zugriff via pyodbc). 
     Übersetze die Frage des Nutzers in eine syntaktisch korrekte Access-SQL-Abfrage.
@@ -665,7 +903,7 @@ def uebersetze_frage_in_sql(nutzer_frage, schema_text, dictionary_csv):
     {baue_sql_feld_leitfaden()}
 
     {baue_semantik_leitfaden()}
-    
+    {kontext_teil}
     === STRIKTE REGELN ===
     1. Antworte AUSSCHLIESSLICH mit dem SQL-Code in EINER Zeile.
     2. Schritt 1: Tabellenrolle aus db_tabellen waehlen. Schritt 2: JOINs aus db_joins.
@@ -681,7 +919,17 @@ def uebersetze_frage_in_sql(nutzer_frage, schema_text, dictionary_csv):
     7. SELECT nur noetige Spalten; bei JOINs kein SELECT *.
     8. Access: SELECT TOP {SQL_DEFAULT_TOP} bei Listen (Standard, env: DIGIWIKI_SQL_DEFAULT_TOP);
        explizites Nutzer-Limit (z.B. Top 10) hat Vorrang. GROUP BY statt DISTINCT+ORDER BY Alias.
-    9. Entferne Markdown.
+    9. PRODUKTE einer Firma — zwei Faelle unterscheiden:
+       a) "Top-Produkte" / "Sortiment" / produktschwerpunkt: NUR stammdatenindustrie
+          (topprodukte, top_produkte, gl_produkt1–3) — KEIN JOIN abdaartikel.
+       b) "Welche Produkte/Artikel hat …" / Produktkatalog: abdaartikel JOIN
+          stammdatenindustrie ON a.anbieter_nr = s.anbieternummer (Anbieternummer).
+          Mit bekannter kundennumm: WHERE s.kundennumm = '…'.
+       ABDA-Artikelanzahl: COUNT(*) mit gleichem JOIN.
+    10. Entferne Markdown.
+    11. FIRMA SUCHEN (stammdatenindustrie): NIEMALS nur nama LIKE.
+        Immer: Trim(IIf(nama Is Null,'',nama) & IIf(nameb Is Null,'',IIf(nama Is Null,nameb,' ' & nameb))) LIKE '%…%'
+        Mit Alias s entsprechend s.nama / s.nameb. Leerzeichen zwischen nama und nameb nicht vergessen.
     """
     try:
         response = client.chat.completions.create(
@@ -693,7 +941,7 @@ def uebersetze_frage_in_sql(nutzer_frage, schema_text, dictionary_csv):
             temperature=0.2 
         )
         sql_raw = response.choices[0].message.content.strip()
-        return sql_raw.replace("```sql", "").replace("```", "").replace("\n", " ").strip()
+        return bereinige_access_sql(sql_raw)
     except Exception as e:
         return f"Fehler bei der KI-Übersetzung: {e}"
 
@@ -1190,6 +1438,11 @@ with st.expander("📊 System-Status & Dashboard"):
     st.metric(label="Verarbeitete Dokumente", value=f"{len(status_daten)} Stück")
     if st.button("🔄 Chat-Verlauf leeren", use_container_width=True):
         st.session_state.chat_historie = []
+        st.session_state.chat_qa_paare = []
+        st.session_state.chat_qa_naechste_id = 0
+        from frage_kontext import FrageKontext
+
+        st.session_state.frage_kontext = FrageKontext().to_dict()
         st.rerun()
 
 st.markdown("---")
@@ -1431,6 +1684,7 @@ with router_panel:
                 st.success(f"✅ {state.get('notiz_msg')}: {state.get('notiz_text')}")
             else:
                 st.error(state.get("notiz_msg"))
+    st.session_state.router_state = None
 
 # ==========================================
 # 8. HAUPTBEREICH (Tabs)
@@ -1454,7 +1708,7 @@ haupttab = st.radio(
 # --- REITER 1: CHAT ---
 if haupttab == "chat":
     _chat_modus_labels = {
-        "auto": "🎯 Auto (SQL → Wiki)",
+        "auto": AUTO_MODUS_LABEL,
         "wissen": "🧠 Wiki-Wissen",
         "datenbank": "🗄️ Datenbank (SQL)",
     }
@@ -1477,6 +1731,12 @@ if haupttab == "chat":
         else:
             wiki_bereich = None
 
+    from frage_kontext import FrageKontext, kontext_caption
+
+    _kontext = FrageKontext.from_dict(st.session_state.get("frage_kontext"))
+    if _kontext.hat_kontext():
+        st.caption(f"🧠 {kontext_caption(_kontext)} — Folgefragen beziehen sich darauf.")
+
     # Sprach-Eingabe (Diktat) als Alternative zum Chat-Feld unten.
     if st.session_state.pop("_clear_chat_voice", False):
         st.session_state["chat_voice_text"] = ""
@@ -1493,8 +1753,7 @@ if haupttab == "chat":
     with sp_btn:
         chat_voice_senden = st.button("Fragen", use_container_width=True)
 
-    for r in st.session_state.chat_historie:
-        with st.chat_message(r["rolle"]): st.markdown(r["text"])
+    zeige_chat_verlauf_mit_markierung()
 
     eingabe_frage = st.chat_input("Frage ans Wiki oder die Datenbank...")
 
@@ -1523,17 +1782,39 @@ if haupttab == "chat":
             frage_modus = "auto"
 
     if frage:
-        historie_text = baue_chat_historie_text(st.session_state.chat_historie)
-        frage_typ = ermittle_frage_typ(frage, frage_modus, frage_typ_explizit)
-        wiki_fallback = frage_modus == "auto" and frage_typ == "datenbank"
+        from frage_kontext import (
+            FrageKontext,
+            aktualisiere_kontext,
+            baue_sql_kontext_block,
+            baue_wiki_kontext_block,
+            bereichere_frage,
+            ist_folgefrage,
+            kontext_caption,
+        )
 
-        with st.chat_message("user"): st.markdown(frage)
-        st.session_state.chat_historie.append({"rolle": "user", "text": frage})
+        kontext = FrageKontext.from_dict(st.session_state.get("frage_kontext"))
+        frage_original = frage
+        if ist_folgefrage(frage, kontext):
+            frage = bereichere_frage(frage, kontext)
+            st.caption(f"🔗 Folgefrage — {kontext_caption(kontext)}")
+
+        historie_text = baue_chat_historie_text(st.session_state.chat_historie)
+        wiki_kontext = baue_wiki_kontext_block(kontext)
+        if wiki_kontext:
+            historie_text = f"{historie_text}\n{wiki_kontext}".strip()
+        frage_typ = ermittle_frage_typ(frage, frage_modus, frage_typ_explizit)
+        wiki_fallback = frage_modus == "auto" and erlaube_wiki_fallback(frage_typ, frage)
+        wiki_bereich_aktiv = effektiver_wiki_bereich(frage, wiki_bereich)
+
+        with st.chat_message("user"):
+            st.markdown(frage_original)
+        st.session_state.chat_historie.append({"rolle": "user", "text": frage_original})
 
         with st.chat_message("assistant"):
+            qa_id_aktuell = None
             if frage_typ == "wissen":
                 with st.spinner("Durchsuche die Wissensbasis..."):
-                    ergebnis = frage_das_wiki(frage, historie_text=historie_text, bereich=wiki_bereich)
+                    ergebnis = frage_das_wiki(frage, historie_text=historie_text, bereich=wiki_bereich_aktiv)
                 antwort = ergebnis.get("antwort", "")
                 quellen = ergebnis.get("quellen", [])
                 st.caption("🧠 Antwort aus Wiki-Wissensbasis")
@@ -1543,46 +1824,283 @@ if haupttab == "chat":
                 hist_text = antwort
                 if quellen:
                     hist_text += "\n\n*📚 Quellen: " + ", ".join(quellen) + "*"
-                st.session_state.chat_historie.append({"rolle": "assistant", "text": hist_text})
+                qa_id_aktuell = chat_qa_hinzufuegen(frage_original, antwort, "wiki", quellen=quellen)
+                st.session_state.chat_historie.append({
+                    "rolle": "assistant",
+                    "text": hist_text,
+                    "qa_id": qa_id_aktuell,
+                })
+                aktualisiere_kontext(kontext, frage_original, "wiki")
+                st.session_state.frage_kontext = kontext.to_dict()
             else:
                 sql_erfolg = False
                 with st.spinner("Durchsuche Datenbank..."):
                     try:
-                        generiertes_sql = uebersetze_frage_in_sql(frage, db_schema, db_dictionary)
+                        direkt_sql = None
+                        firmen_such = extrahiere_firmen_suchbegriff(frage_original) or kontext.firma
+                        if ist_folgefrage(frage_original, kontext) and kontext.kundennumm:
+                            direkt_sql = baue_direkt_sql_folgefrage(
+                                frage_original, kontext.kundennumm, kontext.thema
+                            )
+                        if not direkt_sql:
+                            direkt_sql = baue_direkt_sql_firma_produkte(
+                                frage_original,
+                                kundennumm=kontext.kundennumm,
+                                firmen_such=firmen_such,
+                            )
+                        generiertes_sql = direkt_sql or uebersetze_frage_in_sql(
+                            frage,
+                            db_schema,
+                            db_dictionary,
+                            kontext_block=baue_sql_kontext_block(kontext),
+                        )
+                        generiertes_sql = bereinige_access_sql(generiertes_sql)
                         ergebnis = fuehre_sql_aus(generiertes_sql)
 
                         if isinstance(ergebnis, pd.DataFrame) and not ergebnis.empty:
                             sql_erfolg = True
-                            st.caption("🗄️ Antwort aus Datenbank (SQL)")
-                            st.success(f"{len(ergebnis)} Datensätze gefunden:")
-                            st.dataframe(ergebnis, use_container_width=True)
+                            st.caption(kaskaden_quellen_caption(frage_typ, "sql"))
+                            synthese = None
+                            if synthese_aktiv() and soll_synthese_anwenden(frage_original, ergebnis):
+                                with st.spinner("Erstelle KI-Briefing (ArtikelDB + Stamm) …"):
+                                    synthese = _versuche_ki_synthese(
+                                        frage_original,
+                                        sql_df=ergebnis,
+                                        kundennumm=kontext.kundennumm,
+                                        firmen_such=firmen_such,
+                                    )
+                            if synthese and synthese.ok:
+                                st.caption(kaskaden_quellen_caption(frage_typ, "ki"))
+                                st.markdown(synthese.text)
+                            with st.expander(f"Rohdaten: {len(ergebnis)} Datensätze (SQL)", expanded=not (synthese and synthese.ok)):
+                                st.dataframe(ergebnis, use_container_width=True)
+                            sql_md = sql_df_zu_markdown(ergebnis)
+                            if synthese and synthese.ok:
+                                antwort_sql = synthese.text
+                                chat_text = f"{synthese.text}\n\n---\n\n**Rohdaten ({len(ergebnis)} Zeilen)**\n\n{sql_md}"
+                            else:
+                                antwort_sql = f"{len(ergebnis)} Datensätze in der Datenbank gefunden."
+                                chat_text = f"**{len(ergebnis)} Datensätze (SQL)**\n\n{sql_md}"
+                            qa_id_aktuell = chat_qa_hinzufuegen(
+                                frage_original, antwort_sql, "sql", sql_markdown=sql_md,
+                            )
                             st.session_state.chat_historie.append({
                                 "rolle": "assistant",
-                                "text": f"🗄️ Tabelle mit {len(ergebnis)} Zeilen (SQL).",
+                                "text": chat_text,
+                                "qa_id": qa_id_aktuell,
                             })
+                            aktualisiere_kontext(kontext, frage_original, "sql", ergebnis_df=ergebnis)
+                            st.session_state.frage_kontext = kontext.to_dict()
                         elif isinstance(ergebnis, pd.DataFrame) and ergebnis.empty:
-                            if not wiki_fallback:
-                                st.info("Keine Treffer in der Datenbank.")
-                                st.session_state.chat_historie.append({"rolle": "assistant", "text": "Keine SQL-Treffer."})
+                            kaskade_kn = kontext.kundennumm
+                            kaskade_firma = kontext.firma
+                            if not kaskade_kn and firmen_such:
+                                db_hit = suche_firma_in_db(firmen_such)
+                                if db_hit:
+                                    kaskade_kn = db_hit.get("kundennumm", "")
+                                    kaskade_firma = kaskade_firma or db_hit.get("firmenname", "")
+
+                            live_fehler = ""
+                            if ist_einzel_firma_live_web_frage(frage):
+                                with st.spinner(
+                                    "Live-Recherche auf Firmen-Website (installierter Chrome) …"
+                                ):
+                                    live = firmen_live_recherche(
+                                        frage,
+                                        kundennumm=kaskade_kn or None,
+                                        firmenname=kaskade_firma or None,
+                                    )
+                                if live.ok:
+                                    sql_erfolg = True
+                                    st.caption(kaskaden_quellen_caption(frage_typ, "web"))
+                                    if live.aus_cache:
+                                        st.caption("(aus Web-Cache, max. 7 Tage)")
+                                    live_synthese = None
+                                    if synthese_aktiv():
+                                        with st.spinner("Erstelle KI-Briefing (Web + CRM) …"):
+                                            live_synthese = _versuche_ki_synthese(
+                                                frage_original,
+                                                kundennumm=live.kundennumm,
+                                                firmen_such=live.firmenname,
+                                                web_text=live.text,
+                                            )
+                                    if live_synthese and live_synthese.ok:
+                                        st.caption(kaskaden_quellen_caption(frage_typ, "ki"))
+                                        st.markdown(live_synthese.text)
+                                        with st.expander(
+                                            f"Live-Website: {live.firmenname}",
+                                            expanded=False,
+                                        ):
+                                            st.markdown(
+                                                f"[{live.url}]({live.url})\n\n{live.text[:8000]}"
+                                            )
+                                        live_antwort = live_synthese.text
+                                        live_chat = (
+                                            f"{live_synthese.text}\n\n---\n\n"
+                                            f"**Live-Web:** [{live.url}]({live.url})"
+                                        )
+                                    else:
+                                        st.markdown(
+                                            f"**{live.firmenname}** — [{live.url}]({live.url})\n\n"
+                                            f"{live.text[:12000]}"
+                                        )
+                                        live_antwort = (
+                                            f"**{live.firmenname}** — {live.url}\n\n{live.text[:12000]}"
+                                        )
+                                        live_chat = live_antwort
+                                    if live.personen_liste:
+                                        neu = live.personen_neu or 0
+                                        vorh = live.personen_vorhanden or 0
+                                        akt = live.personen_aktualisiert or 0
+                                        st.caption(
+                                            f"crm_personen: {neu} neu, {vorh} bereits vorhanden"
+                                            + (f", {akt} aktualisiert" if akt else "")
+                                        )
+                                        st.table(
+                                            [
+                                                {
+                                                    "Anrede": p.get("anrede", ""),
+                                                    "Titel": p.get("titel", ""),
+                                                    "Vorname": p.get("vorname", ""),
+                                                    "Nachname": p.get("nachname", ""),
+                                                    "Funktion": p.get("funktion", ""),
+                                                    "FunktionID": p.get("funktionid", ""),
+                                                    "Status": p.get("status", ""),
+                                                }
+                                                for p in live.personen_liste
+                                            ]
+                                        )
+                                        st.caption(
+                                            "Beim nächsten Mal antwortet SQL direkt aus crm_personen "
+                                            "(JOIN ref_funktionen, Ebene 1–2)."
+                                        )
+                                    elif live.md_pfad:
+                                        st.caption(f"MD-Snapshot: `{live.md_pfad}`")
+                                    qa_id_aktuell = chat_qa_hinzufuegen(
+                                        frage_original,
+                                        live_antwort,
+                                        "live_web",
+                                    )
+                                    st.session_state.chat_historie.append({
+                                        "rolle": "assistant",
+                                        "text": live_chat,
+                                        "qa_id": qa_id_aktuell,
+                                    })
+                                    aktualisiere_kontext(
+                                        kontext,
+                                        frage_original,
+                                        "live_web",
+                                        live_firma=live.firmenname,
+                                        live_kundennumm=live.kundennumm,
+                                        live_personen=live.personen_liste,
+                                    )
+                                    st.session_state.frage_kontext = kontext.to_dict()
+                                else:
+                                    live_fehler = live.fehler or "Live-Web fehlgeschlagen."
+                                    kaskade_kn = kaskade_kn or live.kundennumm
+                                    kaskade_firma = kaskade_firma or live.firmenname
+
+                            if (
+                                not sql_erfolg
+                                and kaskade_kn
+                                and ist_einzel_firma_md_fallback_frage(frage)
+                            ):
+                                with st.spinner("MD-Archiv (Fallback fuer diese Firma) …"):
+                                    md = firmen_md_fallback(
+                                        frage,
+                                        kundennumm=kaskade_kn,
+                                        firmenname=kaskade_firma or "",
+                                    )
+                                if md.ok:
+                                    sql_erfolg = True
+                                    st.caption(kaskaden_quellen_caption(frage_typ, "md"))
+                                    titel = kaskade_firma or f"kundennumm {kaskade_kn}"
+                                    md_synthese = None
+                                    if synthese_aktiv():
+                                        with st.spinner("Erstelle KI-Briefing (MD + CRM) …"):
+                                            md_synthese = _versuche_ki_synthese(
+                                                frage_original,
+                                                kundennumm=kaskade_kn,
+                                                firmen_such=kaskade_firma or "",
+                                                md_text=md.text,
+                                            )
+                                    if md_synthese and md_synthese.ok:
+                                        st.caption(kaskaden_quellen_caption(frage_typ, "ki"))
+                                        st.markdown(md_synthese.text)
+                                        with st.expander("MD-Archiv (Rohdaten)", expanded=False):
+                                            st.markdown(md.text[:8000])
+                                        md_antwort = md_synthese.text
+                                        md_chat = f"{md_synthese.text}\n\n---\n\n**MD-Archiv** ({titel})"
+                                    else:
+                                        st.markdown(
+                                            f"**{titel}** — MD-Website-Archiv\n\n{md.text[:12000]}"
+                                        )
+                                        md_antwort = f"**{titel}** — MD-Archiv\n\n{md.text[:12000]}"
+                                        md_chat = md_antwort
+                                    if md.dateien:
+                                        st.caption(
+                                            "Quellen: "
+                                            + ", ".join(os.path.basename(d) for d in md.dateien)
+                                        )
+                                    qa_id_aktuell = chat_qa_hinzufuegen(
+                                        frage_original,
+                                        md_antwort,
+                                        "md_fallback",
+                                    )
+                                    st.session_state.chat_historie.append({
+                                        "rolle": "assistant",
+                                        "text": md_chat,
+                                        "qa_id": qa_id_aktuell,
+                                    })
+                                    aktualisiere_kontext(
+                                        kontext,
+                                        frage_original,
+                                        "md_fallback",
+                                        live_firma=kaskade_firma,
+                                        live_kundennumm=kaskade_kn,
+                                    )
+                                    st.session_state.frage_kontext = kontext.to_dict()
+
+                            if not sql_erfolg and not wiki_fallback:
+                                if live_fehler:
+                                    st.warning(live_fehler)
+                                st.info(meldung_sql_leer(frage))
+                                st.session_state.chat_historie.append({
+                                    "rolle": "assistant",
+                                    "text": "Keine SQL-Treffer; Kaskade ohne Ergebnis.",
+                                })
+                        elif isinstance(ergebnis, str) and ergebnis.startswith("Fehler"):
+                            st.warning(ergebnis)
                         else:
-                            st.error(ergebnis)
+                            st.warning(str(ergebnis))
                     except Exception as e:
-                        st.error(f"❌ Fehler: {str(e)}")
+                        st.warning(f"Abfrage fehlgeschlagen: {e}")
 
                 if not sql_erfolg and wiki_fallback:
-                    st.caption("Keine SQL-Treffer – wechsle zur Wiki-Wissensbasis …")
+                    st.caption("Keine SQL-Treffer – Wiki-Dokumente (kein Marktdaten-Fallback) …")
                     with st.spinner("Durchsuche die Wissensbasis..."):
-                        ergebnis = frage_das_wiki(frage, historie_text=historie_text, bereich=wiki_bereich)
+                        ergebnis = frage_das_wiki(frage, historie_text=historie_text, bereich=wiki_bereich_aktiv)
                     antwort = ergebnis.get("antwort", "")
                     quellen = ergebnis.get("quellen", [])
-                    st.caption("🧠 Antwort aus Wiki-Wissensbasis (Fallback)")
+                    st.caption(kaskaden_quellen_caption(frage_typ, "wiki"))
                     st.markdown(antwort)
                     if quellen:
                         st.caption("📚 Quellen: " + ", ".join(quellen))
                     hist_text = antwort
                     if quellen:
                         hist_text += "\n\n*📚 Quellen: " + ", ".join(quellen) + "*"
-                    st.session_state.chat_historie.append({"rolle": "assistant", "text": hist_text})
+                    qa_id_aktuell = chat_qa_hinzufuegen(frage_original, antwort, "wiki_fallback", quellen=quellen)
+                    st.session_state.chat_historie.append({
+                        "rolle": "assistant",
+                        "text": hist_text,
+                        "qa_id": qa_id_aktuell,
+                    })
+                    aktualisiere_kontext(kontext, frage_original, "wiki_fallback")
+                    st.session_state.frage_kontext = kontext.to_dict()
+            if qa_id_aktuell is not None:
+                zeige_qa_aktionszeile(qa_id_aktuell)
+
+    zeige_qa_export_panel()
 
 # --- REITER 2: MAILS & WHATSAPP ---
 elif haupttab == "mails":

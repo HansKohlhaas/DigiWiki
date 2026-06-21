@@ -27,3 +27,10 @@ NAECHSTER_CHAT.md
 15_wiki_web_ui1.py
 9_wiki_waechter0.py
 test_vdb.py
+live_web_cache.json
+digiwiki_keepalive.log
+wiki_waechter_bericht.txt
+Antworten/
+Adressen/
+Adresslisten/
+.cursor/

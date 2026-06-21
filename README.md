@@ -18,10 +18,14 @@ Persönliches Wissens- und CRM-System für DigiBest: semantische Dokumentensuche
 | `9_wiki_waechter.py` | Hintergrund-Indizierung |
 | `11_wiki_api.py` | FastAPI für externes CRM |
 | `ask_wiki.py` | RAG / Wiki-Abfragen |
+| `antworten_export.py` | Markierte Antworten zusammenfassen → Ordner `Antworten/` |
+| `Antworten/` | Exportierte Antwort-Sammlungen (Markdown) |
 | `config.py` | Pfade und Einstellungen |
 | `start.bat` | Start inkl. Tailscale & Helfer |
 
 ## Anleitungen (Dokumentation)
+
+Vollständige Übersicht: **[Projektdokumente/DOKUMENTE.md](Projektdokumente/DOKUMENTE.md)**
 
 | Datei | Zielgruppe |
 |-------|------------|
@@ -30,6 +34,7 @@ Persönliches Wissens- und CRM-System für DigiBest: semantische Dokumentensuche
 | [Anleitung_Nutzer_Kurzreferenz.md](Projektdokumente/Anleitung_Nutzer_Kurzreferenz.md) | Nutzer: **1-Seiten-Spickzettel** |
 | [Anleitung_Nutzer_Kurzreferenz.html](Projektdokumente/Anleitung_Nutzer_Kurzreferenz.html) | Nutzer: Kurzreferenz **drucken / als PDF** (Strg+P) |
 | [Anleitung_PC_und_Handy_Einrichtung_Admin.md](Projektdokumente/Anleitung_PC_und_Handy_Einrichtung_Admin.md) | Administrator: PC, Tailscale, Start |
+| [Roadmap_Wissens_Kaskade.md](Projektdokumente/Roadmap_Wissens_Kaskade.md) | Planung (Entwicklung): SQL → Web → MD → KI |
 
 ## Hinweise
 

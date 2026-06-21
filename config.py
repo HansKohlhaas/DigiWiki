@@ -1,4 +1,5 @@
 import os
+import re
 from pathlib import Path
 
 
@@ -41,6 +42,7 @@ _dict_projekt = BASE_DIR / "Projektdokumente" / "data_dictionary.csv"
 DICTIONARY_PATH = _dict_root if _dict_root.exists() else _dict_projekt
 MAIL_DOWNLOAD_DIR = BASE_DIR / "Mail_Downloads"
 MAIL_UPLOAD_DIR = BASE_DIR / "Mail_Uploads"
+ANTWORTEN_DIR = _env_path("DIGIWIKI_ANTWORTEN_DIR", str(BASE_DIR / "Antworten"))
 STREAMLIT_HOST = os.getenv("DIGIWIKI_STREAMLIT_HOST", "0.0.0.0")
 STREAMLIT_PORT = int(os.getenv("DIGIWIKI_STREAMLIT_PORT", "8501"))
 API_HOST = os.getenv("DIGIWIKI_API_HOST", "0.0.0.0")
@@ -50,6 +52,40 @@ WHATSAPP_CLOUD_API_TOKEN = os.getenv("DIGIWIKI_WHATSAPP_CLOUD_API_TOKEN", "").st
 WHATSAPP_PHONE_NUMBER_ID = os.getenv("DIGIWIKI_WHATSAPP_PHONE_NUMBER_ID", "").strip()
 WHATSAPP_CLOUD_API_VERSION = os.getenv("DIGIWIKI_WHATSAPP_CLOUD_API_VERSION", "v19.0")
 SQL_DEFAULT_TOP = max(1, int(os.getenv("DIGIWIKI_SQL_DEFAULT_TOP", "200")))
+MD_LIVE_DIR = _env_path("DIGIWIKI_MD_LIVE_DIR", r"C:\Eigene Projekte\MD\live")
+LIVE_WEB_CACHE_PATH = BASE_DIR / "live_web_cache.json"
+LIVE_WEB_ENABLED = os.getenv("DIGIWIKI_LIVE_WEB", "true").strip().lower() in ("1", "true", "yes")
+LIVE_WEB_TTL_DAYS = max(1, int(os.getenv("DIGIWIKI_WEB_CACHE_TTL_DAYS", "7")))
+LIVE_WEB_TIMEOUT_S = max(10, int(os.getenv("DIGIWIKI_WEB_TIMEOUT_S", "45")))
+LIVE_WEB_MAX_CHARS = max(5000, int(os.getenv("DIGIWIKI_WEB_MAX_CHARS", "120000")))
+LIVE_WEB_BROWSER_CHANNEL = os.getenv("DIGIWIKI_LIVE_WEB_CHANNEL", "chrome").strip() or "chrome"
+LIVE_WEB_MD_SPEICHERN = os.getenv("DIGIWIKI_LIVE_WEB_MD", "false").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
+LIVE_WEB_CRM_SYNC = os.getenv("DIGIWIKI_LIVE_WEB_CRM_SYNC", "true").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
+CHROMA_EXCLUDE_CRM_MD = os.getenv("DIGIWIKI_CHROMA_EXCLUDE_MD", "true").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
+# False = PC und Handy duerfen gleichzeitig arbeiten (empfohlen).
+# True = nur ein Geraet (letzter Tab gewinnt, blockiert oft Handy wenn PC-Browser offen).
+SINGLE_SESSION_TAKEOVER = os.getenv("DIGIWIKI_SINGLE_SESSION", "false").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
+ORAKEL_SYNTHESE_ENABLED = os.getenv("DIGIWIKI_ORAKEL_SYNTHESE", "true").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
 
 
 def chroma_db_path_str() -> str:
@@ -82,7 +118,11 @@ WISSENSBEREICHE = {
     },
     "verfahren": {
         "beschreibung": "Verfahren, Abläufe, Leitfäden, Arbeitsanweisungen",
-        "keywords": ["verfahren", "prozess", "ablauf", "workflow", "arbeitsanweisung", "leitfaden", "checkliste", "handbuch"],
+        "keywords": [
+            "verfahren", "prozess", "ablauf", "workflow", "arbeitsanweisung", "leitfaden",
+            "checkliste", "handbuch", "einrichtung", "schulung", "anleitung", "bestellanleitung",
+            "formulierungshilfen",
+        ],
     },
     "formulare": {
         "beschreibung": "Tabellen, Vorlagen, Muster und Master",
@@ -115,7 +155,60 @@ def ist_gueltiger_wissensbereich(name: str | None) -> bool:
     return name in WISSENSBEREICHE
 
 
+# Standardablage fuer Anleitungen/Verfahren (Nutzer-Konvention)
+VERFAHREN_PFAD_MARKER = (
+    "einrichtung + schulung",
+    "einrichtung und schulung",
+    "/anleitungen/",
+    "bestellanleitungen",
+    "einrichtung programm",
+    "formulierungshilfen",
+)
+
+# Chroma-Metadaten: Pfad-Substring fuer bereits indexierte Dateien ohne bereich=verfahren
+VERFAHREN_QUELL_PFADE = (
+    "Einrichtung + Schulung",
+    "Einrichtung und Schulung",
+    "\\Anleitungen\\",
+    "Bestellanleitungen",
+    "Einrichtung Programm",
+)
+
+
+def ist_verfahren_pfad(pfad: str, dateiname: str | None = None) -> bool:
+    text = f"{normalisiere_text(pfad)} {normalisiere_text(dateiname)}"
+    return any(marker in text for marker in VERFAHREN_PFAD_MARKER)
+
+
+def baue_verfahren_chroma_filter() -> dict:
+    """Suchfilter: bereich=verfahren ODER Datei aus Einrichtung/Schulung-Ordnern."""
+    return {
+        "$or": [{"bereich": "verfahren"}]
+        + [{"source": {"$contains": marker}} for marker in VERFAHREN_QUELL_PFADE]
+    }
+
+
+def ist_crm_archiv_datei(pfad: str, dateiname: str | None = None) -> bool:
+    """CRM-Website-MD: {kundennumm}_*.md unter .../MD/ — kein DigiBest-Dokumentenwissen."""
+    name = (dateiname or os.path.basename(pfad)).replace("\\", "/")
+    path = normalisiere_text(pfad)
+    if not name.lower().endswith(".md"):
+        return False
+    if not re.match(r"^\d{6,9}_", name, re.I):
+        return False
+    return "/md/" in path or path.rstrip("/").endswith("/md")
+
+
+def baue_standard_chroma_filter() -> dict:
+    """Standard-Wiki-Suche ohne CRM-Website-Archive."""
+    return {"bereich": {"$ne": "crm_archiv"}}
+
+
 def ermittle_wissensbereich(pfad: str, dateiname: str | None = None) -> str:
+    if ist_crm_archiv_datei(pfad, dateiname):
+        return "crm_archiv"
+    if ist_verfahren_pfad(pfad, dateiname):
+        return "verfahren"
     text = f"{normalisiere_text(pfad)} {normalisiere_text(dateiname)}"
     for bereich, daten in WISSENSBEREICHE.items():
         if bereich == "vollzugriff":

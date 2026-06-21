@@ -36,12 +36,11 @@ $streamlitArgs = @(
     '-m', 'streamlit', 'run', $app,
     '--server.address', '0.0.0.0',
     '--server.headless', 'true',
-    '--server.enableCORS', 'false',
+    '--server.enableCORS', 'true',
     '--server.enableXsrfProtection', 'false',
     '--server.enableWebsocketCompression', 'false',
     '--server.websocketPingInterval', '30',
-    '--server.disconnectedSessionTTL', '3600',
-    '--browser.serverAddress', 'localhost'
+    '--server.disconnectedSessionTTL', '3600'
 )
 
 $proc = Start-Process -FilePath $python `

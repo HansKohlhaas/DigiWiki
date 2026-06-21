@@ -13,14 +13,222 @@ __all__ = [
     "baue_semantik_leitfaden",
     "baue_klassifikator_leitfaden",
     "baue_sql_feld_leitfaden",
+    "firma_suche_like",
+    "firma_vollname_expr",
+    "bereinige_access_sql",
+    "baue_direkt_sql_folgefrage",
+    "baue_direkt_sql_firma_produkte",
+    "baue_sql_abda_artikel_kundennumm",
+    "ist_topprodukte_frage",
+    "ist_artikelkatalog_frage",
     "ist_offensichtliche_wiki_frage",
     "SEMANTISCHE_FELDALIASE",
     "SQL_FRAGETYPEN",
     "WIKI_FRAGETYPEN",
 ]
 
+TOPPRODUKT_SIGNALE = (
+    "top-produkt",
+    "top produkt",
+    "topprodukt",
+    "wichtigste produkte",
+    "sortimentsstruktur",
+    "markenstruktur",
+    "produktschwerpunkt",
+    "sortiment von",
+    "sortiment hat",
+    "welches sortiment",
+    "gl_produkt",
+)
+
+ARTIKELKATALOG_SIGNALE = (
+    "welche produkte",
+    "produkte haben",
+    "produktkatalog",
+    "produktliste",
+    "produkte hat",
+    "produkte von",
+    "produkte bei",
+    "artikeldb",
+    "artikel db",
+    "abda-artikel",
+    "abda artikel",
+    "rx-artikel",
+    "otc-artikel",
+    "pzn",
+    "wirkstoff",
+)
+
+ARTIKEL_SUCH_STOPWORDS = frozenset({
+    "welche", "haben", "produkte", "produkt", "artikel", "bitte", "denn", "die", "der", "das",
+    "den", "dem", "des", "ein", "eine", "einer", "eines", "noch", "auch", "dazu", "davon",
+    "deren", "ihre", "ihren", "ihrer", "sind", "hat", "von", "bei", "was", "gibt", "zeige",
+})
+
+
+def ist_topprodukte_frage(frage: str) -> bool:
+    text = (frage or "").lower()
+    return any(s in text for s in TOPPRODUKT_SIGNALE)
+
+
+def ist_artikelkatalog_frage(frage: str) -> bool:
+    """Einzel-Firma: Artikel aus abdaartikel (nicht nur Freitext topprodukte)."""
+    text = (frage or "").lower()
+    if ist_topprodukte_frage(frage):
+        return False
+    if any(s in text for s in ARTIKELKATALOG_SIGNALE):
+        return True
+    if "produkt" in text and "top" not in text:
+        return True
+    if "artikel" in text and "anzahl" not in text and "wie viele" not in text:
+        return True
+    return False
+
+
+def baue_sql_abda_artikel_kundennumm(kundennumm: str, frage: str = "", top: int | None = None) -> str:
+    """ArtikelDB: abdaartikel JOIN stammdatenindustrie ueber anbieter_nr = anbieternummer."""
+    kn = (kundennumm or "").strip().replace("'", "''")
+    top = top or SQL_DEFAULT_TOP
+    text = (frage or "").lower()
+    filter_teile = [f"s.kundennumm = '{kn}'"]
+    suchwoerter = [
+        w.strip(".,?!")
+        for w in text.split()
+        if len(w.strip(".,?!")) > 3
+        and w.strip(".,?!").lower() not in ARTIKEL_SUCH_STOPWORDS
+    ]
+    if suchwoerter:
+        like_teile = []
+        for w in suchwoerter[:3]:
+            esc = w.replace("'", "''")
+            like_teile.append(
+                f"(a.artikelname LIKE '%{esc}%' OR a.artikelname_hauptbegriff LIKE '%{esc}%' "
+                f"OR a.wirkstegrl LIKE '%{esc}%')"
+            )
+        filter_teile.append("(" + " OR ".join(like_teile) + ")")
+    where = " AND ".join(filter_teile)
+    return (
+        f"SELECT TOP {top} s.nama, s.nameb, s.anbieternummer, a.artikelname, a.pzn, "
+        f"a.abgaberegelung, a.abdawarengruppe, a.wirkstegrl, a.artikeltyp "
+        f"FROM (abdaartikel AS a INNER JOIN stammdatenindustrie AS s "
+        f"ON a.anbieter_nr = s.anbieternummer) WHERE {where} ORDER BY a.artikelname"
+    )
+
+
+def baue_direkt_sql_firma_produkte(
+    frage: str,
+    kundennumm: str = "",
+    firmen_such: str = "",
+) -> str | None:
+    """Direkt-SQL fuer Produktfragen (Top-Felder vs. ArtikelDB)."""
+    if not ist_topprodukte_frage(frage) and not ist_artikelkatalog_frage(frage):
+        return None
+    top = SQL_DEFAULT_TOP
+    kn = (kundennumm or "").strip().replace("'", "''")
+    if ist_topprodukte_frage(frage):
+        if kn:
+            basis = f"FROM stammdatenindustrie WHERE kundennumm = '{kn}'"
+        elif firmen_such:
+            basis = f"FROM stammdatenindustrie WHERE {firma_suche_like(firmen_such)}"
+        else:
+            return None
+        return (
+            f"SELECT TOP {top} nama, nameb, topprodukte, top_produkte, gl_produkt1, gl_produkt2, "
+            f"gl_produkt3, sortiment, produktschwerpunkt {basis}"
+        )
+    if kn:
+        return baue_sql_abda_artikel_kundennumm(kn, frage)
+    if firmen_such:
+        where = firma_suche_like(firmen_such, "s")
+        return (
+            f"SELECT TOP {top} s.nama, s.nameb, s.anbieternummer, a.artikelname, a.pzn, "
+            f"a.abgaberegelung, a.abdawarengruppe, a.wirkstegrl, a.artikeltyp "
+            f"FROM (abdaartikel AS a INNER JOIN stammdatenindustrie AS s "
+            f"ON a.anbieter_nr = s.anbieternummer) WHERE {where} ORDER BY a.artikelname"
+        )
+    return None
+
 # Nutzer-Begriffe → echte DB-Spalten (data_dictionary + Live-DB abgeglichen).
 # WICHTIG: Spalte "marktorientierung" existiert NICHT – Nutzer meinen Marktzielgruppe/emarktzielgruppe.
+
+
+def firma_vollname_expr(alias: str = "") -> str:
+    """Access-SQL: Firmenname als nama & nameb (ODBC-kompatibel, ohne Nz())."""
+    prefix = f"{alias}." if alias else ""
+    n, b = f"{prefix}nama", f"{prefix}nameb"
+    return (
+        f"Trim(IIf({n} Is Null, '', {n}) "
+        f"& IIf({b} Is Null, '', IIf({n} Is Null, {b}, ' ' & {b})))"
+    )
+
+
+def firma_suche_like(suchbegriff: str, alias: str = "") -> str:
+    """LIKE-Filter fuer Firmensuche: concat(nama, nameb) plus Einzelfeld-Fallback."""
+    esc = (suchbegriff or "").replace("'", "''")
+    prefix = f"{alias}." if alias else ""
+    voll = firma_vollname_expr(alias)
+    return (
+        f"({voll} LIKE '%{esc}%' OR {prefix}nama LIKE '%{esc}%' OR {prefix}nameb LIKE '%{esc}%')"
+    )
+
+
+def bereinige_access_sql(sql: str) -> str:
+    """Haeufige LLM-Fehler vor ODBC-Ausfuehrung bereinigen."""
+    s = (sql or "").strip()
+    s = s.replace("```sql", "").replace("```", "").replace("\n", " ").strip()
+    while s.endswith(";"):
+        s = s[:-1].strip()
+    return s
+
+
+def baue_direkt_sql_folgefrage(frage: str, kundennumm: str, thema: str = "") -> str | None:
+    """Sichere SQL-Vorlagen fuer Folgefragen mit bekannter kundennumm (ohne LLM)."""
+    kn = (kundennumm or "").strip().replace("'", "''")
+    if not kn:
+        return None
+    text = (frage or "").lower()
+    thema = (thema or "").lower()
+    top = SQL_DEFAULT_TOP
+    basis = f"FROM stammdatenindustrie WHERE kundennumm = '{kn}'"
+
+    if "narrativ" in text or thema == "narrativ":
+        return (
+            f"SELECT TOP {top} nama, nameb, narrativ, purpose, ambition, zielsetzung, begruendung "
+            f"{basis}"
+        )
+    if thema == "produkte" or "produkt" in text or "artikel" in text:
+        if ist_topprodukte_frage(frage):
+            return (
+                f"SELECT TOP {top} nama, nameb, topprodukte, top_produkte, gl_produkt1, gl_produkt2, "
+                f"gl_produkt3, sortiment, produktschwerpunkt {basis}"
+            )
+        return baue_sql_abda_artikel_kundennumm(kn, frage)
+    if any(x in text for x in ("marktzielgruppe", "akquiseklasse", "segment")) or thema == "markt":
+        return (
+            f"SELECT TOP {top} nama, nameb, Marktzielgruppe, emarktzielgruppe, akquiseklasse, "
+            f"funktion, Kategorie {basis}"
+        )
+    if "d2p" in text:
+        return f"SELECT TOP {top} nama, nameb, d2p_score, d2p_begruendung {basis}"
+    if any(x in text for x in ("adresse", "website", "plz", "ort", "telefon")) or thema == "region":
+        return (
+            f"SELECT TOP {top} nama, nameb, strasse, hausnr, plz, ort, LKZ, telefon, "
+            f"internetadresse, email {basis}"
+        )
+    if thema in ("firma", "narrativ", "produkte", "markt", "region") and any(
+        s in text for s in ("deren", " davon", "dazu", " auch", "noch")
+    ):
+        return f"SELECT TOP {top} nama, nameb, narrativ, purpose, Marktzielgruppe, topprodukte {basis}"
+    return None
+
+
+FIRMA_SUCHE_SQL_HINWEIS = (
+    "Firmenname-Suche in stammdatenindustrie: IMMER nama & nameb verketten "
+    f"(z. B. {firma_vollname_expr()} LIKE '%Suchbegriff%'). "
+    "Nicht nur nama – nameb enthaelt oft GmbH, Deutschland, GB …"
+)
+
+
 SEMANTISCHE_FELDALIASE = [
     {
         "nutzer_begriffe": [
@@ -69,8 +277,8 @@ SEMANTISCHE_FELDALIASE = [
         "nutzer_begriffe": ["hersteller", "anbieter", "produzent", "stellt her", "produziert"],
         "db_tabelle": "stammdatenindustrie / abdaartikel",
         "db_felder": ["nama", "nameb", "anbietername", "artikelname"],
-        "filter_beispiel": "JOIN abdaartikel ON anbieter_nr = anbieternummer",
-        "hinweis": "Firmenname: stammdatenindustrie.nama; Artikel: abdaartikel.",
+        "filter_beispiel": firma_suche_like("Hexal"),
+        "hinweis": "Firmenname: nama & nameb verketten (siehe FIRMA_SUCHE). Artikel: abdaartikel.",
     },
     {
         "nutzer_begriffe": [
@@ -117,7 +325,15 @@ def baue_semantik_leitfaden() -> str:
         f"   SELECT TOP {SQL_DEFAULT_TOP} p.vorname, p.nachname, rf.funktionsbezeichnung, rf.ebene, s.nama "
         "FROM (crm_personen AS p INNER JOIN stammdatenindustrie AS s ON p.kundennumm = s.kundennumm) "
         "LEFT JOIN ref_funktionen AS rf ON p.funktionid = rf.funktionid "
-        "WHERE s.nama LIKE '%Hexal%' AND rf.ebene IN ('1', '2')"
+        "WHERE " + firma_suche_like("Hexal", "s") + " AND rf.ebene IN ('1', '2')\n"
+        "3) Top-Produkte von Hexal (Freitext-Zusammenfassung)\n"
+        f"   SELECT TOP {SQL_DEFAULT_TOP} nama, nameb, topprodukte, top_produkte, gl_produkt1, gl_produkt2, gl_produkt3 "
+        "FROM stammdatenindustrie WHERE " + firma_suche_like("Hexal") + " "
+        "(KEIN JOIN abdaartikel)\n"
+        "4) Welche Produkte hat Hexal? (ArtikelDB)\n"
+        f"   SELECT TOP {SQL_DEFAULT_TOP} s.nama, s.nameb, a.artikelname, a.pzn, a.abgaberegelung "
+        "FROM (abdaartikel AS a INNER JOIN stammdatenindustrie AS s ON a.anbieter_nr = s.anbieternummer) "
+        "WHERE " + firma_suche_like("Hexal", "s") + " ORDER BY a.artikelname"
     )
     return "\n".join(zeilen)
 
@@ -127,7 +343,9 @@ WIKI_FRAGETYPEN = [
         "thema": "dokument_vertrag",
         "signale": [
             "vertrag", "klausel", "was steht in", "dokument", "pdf", "formular ausfuellen",
-            "anleitung", "verfahren", "prozess beschreibung", "wie lauft ab",
+            "anleitung", "arbeitsanleitung", "verfahren", "prozess beschreibung",
+            "wie lauft ab", "wie läuft ab", "einrichten", "einrichtung", "eingerichtet",
+            "schulung", "checkliste", "schritt fuer schritt", "schritt für schritt",
         ],
         "hinweis": "Antwort steht in hinterlegten Dokumenten, nicht in DB-Feldern.",
     },
@@ -219,9 +437,10 @@ SQL_FRAGETYPEN = [
     {
         "thema": "produkte_artikel",
         "signale": [
-            "produkt", "artikel", "pzn", "warengruppe", "sortiment", "stellt her",
+            "produkt", "artikel", "pzn", "warengruppe", "stellt her",
             "produziert", "herstellen", "hersteller", "anbieter", "vertreibt", "wirkstoff",
             "rx", "otc", "abda",
+            "wie viele artikel", "anzahl artikel", "anzahlabda", "anzahlrx",
         ],
         "tabellen": ["abdaartikel", "stammdatenindustrie"],
         "suchfelder": [
@@ -241,11 +460,11 @@ SQL_FRAGETYPEN = [
     {
         "thema": "topprodukte_sortiment",
         "signale": [
-            "topprodukt", "top produkt", "wichtigste produkte", "sortiment",
-            "sortimentsstruktur", "markenstruktur", "produktschwerpunkt", "marken",
-            "wie viele artikel", "anzahl artikel", "anzahlabda", "anzahlrx",
+            "topprodukt", "top produkt", "top-produkt", "wichtigste produkte",
+            "sortimentsstruktur", "markenstruktur", "produktschwerpunkt",
+            "sortiment von", "sortiment hat", "welches sortiment",
         ],
-        "tabellen": ["stammdatenindustrie", "abdaartikel"],
+        "tabellen": ["stammdatenindustrie"],
         "suchfelder": [
             "stammdatenindustrie.nama", "stammdatenindustrie.topprodukte",
             "stammdatenindustrie.top_produkte", "stammdatenindustrie.gl_produkt1",
@@ -254,13 +473,13 @@ SQL_FRAGETYPEN = [
         "ausgabefelder": [
             "nama", "nameb", "gl_produkt1", "gl_produkt2", "gl_produkt3",
             "topprodukte", "top_produkte", "sortiment", "sortimentsstruktur",
-            "markenstruktur", "anzahlabda", "anzahlrx", "anzahlnonrx", "produktschwerpunkt",
+            "markenstruktur", "produktschwerpunkt",
         ],
-        "joins": ["abdaartikel.anbieter_nr = stammdatenindustrie.anbieternummer"],
+        "joins": [],
         "beispiele": [
-            "Top-Produkte von Sanofi",
+            "Top-Produkte von Sanofi -> NUR stammdatenindustrie.topprodukte, kein JOIN abdaartikel",
             "Welches Sortiment hat Merz?",
-            "Firmen mit den meisten ABDA-Artikeln",
+            "Welche Produkte hat Merz? -> abdaartikel JOIN anbieternummer, NICHT topprodukte",
         ],
     },
     {
@@ -453,17 +672,49 @@ Siehe db_joins.csv (vollstaendiger JOIN-Graph) und db_tabellen.csv (Tabellenroll
 
 === ACCESS-SQL ===
 - SELECT TOP {SQL_DEFAULT_TOP} bei Listen (Standard-Limit, konfigurierbar via DIGIWIKI_SQL_DEFAULT_TOP)
-- Nutzer nennt explizit ein Limit (z.B. Top 10) -> dieses Limit verwenden
+- Nutzer nennt explizit ein Limit (z. B. Top 10) -> dieses Limit verwenden
 - GROUP BY statt SELECT DISTINCT mit ORDER BY auf Alias
 - Textsuche: LIKE '%' mit OR-Synonymen
+- {FIRMA_SUCHE_SQL_HINWEIS}
 """
+
+
+VERFAHREN_WIKI_SIGNALE = (
+    "anleitung",
+    "arbeitsanleitung",
+    "einricht",
+    "eingerichtet",
+    "schulung",
+    "wie lauft ab",
+    "wie läuft ab",
+    "checkliste",
+    "schritt fuer schritt",
+    "schritt für schritt",
+    "was steht in der anleitung",
+    "laut anleitung",
+    "bestellanleitung",
+    "formulierungshilfe",
+)
+
+
+def ist_verfahren_wiki_frage(frage: str) -> bool:
+    """Fragen zu Einrichtung, Anleitungen, Abläufen → Wiki, nicht SQL."""
+    text = (frage or "").lower()
+    if any(s in text for s in VERFAHREN_WIKI_SIGNALE):
+        return True
+    if "digibest" in text and any(s in text for s in ("einricht", "anleitung", "ablauf", "schulung")):
+        return True
+    return False
 
 
 def ist_offensichtliche_wiki_frage(frage: str) -> bool:
     """Schnelle Heuristik fuer klare Dokumentenfragen."""
+    if ist_verfahren_wiki_frage(frage):
+        return True
     text = (frage or "").lower()
     return any(s in text for s in (
         "vertrag", "klausel", "formular ausfüllen", "formular ausfuellen",
         "was steht im dokument", "was steht in dem dokument",
         "verfahren beschreibung", "laut vertrag",
+        "prozess beschreibung",
     ))

@@ -2,9 +2,9 @@
 address = "0.0.0.0"
 port = 8501
 headless = true
-runOnSave = true
+runOnSave = false
 fileWatcherType = "poll"
-enableCORS = false
+enableCORS = true
 enableXsrfProtection = false
 # WebSocket ohne Kompression – stabiler ueber Tailscale/Mobilfunk
 enableWebsocketCompression = false
@@ -15,7 +15,5 @@ websocketPingInterval = 30
 disconnectedSessionTTL = 3600
 
 [browser]
-# Wird von start.bat mit der live ermittelten Tailscale-IP ueberschrieben
-serverAddress = "localhost"
-serverPort = 8501
+# Nur fuer automatisches Oeffnen am PC – Remote-Clients nutzen ihre eigene URL.
 gatherUsageStats = false

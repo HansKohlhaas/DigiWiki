@@ -38,6 +38,8 @@ echo [OK] DigiWiki startet ab jetzt automatisch beim Login.
 echo      Task: %TASK_NAME%
 echo      Skript: %START_BAT%
 echo      Entfernen: schtasks /delete /tn "%TASK_NAME%" /f
-echo      Erwartete PowerShell-Helfer: 0 wenn gestoppt, max. 1 wenn start.bat laeuft
+echo.
+echo [EMPFOHLEN] Zusaetzlich install_keepalive_task.bat ausfuehren
+echo             ^(repariert alle 5 Min Tailscale + Streamlit im Hintergrund^)
 echo.
 pause
