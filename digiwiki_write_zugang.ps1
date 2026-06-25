@@ -2,11 +2,17 @@ param(
     [Parameter(Mandatory = $true)][string]$TailscaleIp,
     [string]$TailscaleHttps = '',
     [string]$LanIp = '',
-    [string]$Root = (Split-Path -Parent $MyInvocation.MyCommand.Path)
+    [string]$Root = ''
 )
 
+if (-not $Root) {
+    $Root = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
+}
+
 $ipUrl = "http://${TailscaleIp}:8501"
+# IP zuerst: kein MagicDNS/Privates-DNS noetig – weniger Zufallsfehler am Handy.
 $primaryUrl = $ipUrl
+$optionalHttps = if ($TailscaleHttps) { $TailscaleHttps } else { '' }
 $zugangPath = Join-Path $Root 'digiwiki_zugang.txt'
 $htmlPath = Join-Path $Root 'digiwiki_handy.html'
 $stand = Get-Date -Format 'dd.MM.yyyy HH:mm'
@@ -24,15 +30,20 @@ $lines += @(
     '',
     'HANDY (Lesezeichen - Tailscale muss verbunden sein):',
     "  PRIMAER:  $primaryUrl",
-    '  (IP-Adresse - funktioniert OHNE DNS, deshalb stabil auf Android.)'
+    '  (IP-Adresse – funktioniert OHNE DNS, deshalb stabil auf Android.)'
 )
-if ($TailscaleHttps) {
-    $lines += "  Optional: $TailscaleHttps  (nur wenn Tailscale-DNS am Handy aktiv ist)"
+if ($optionalHttps) {
+    $lines += "  Optional: $optionalHttps  (nur wenn IP ausnahmsweise nicht laedt)"
 }
 $lines += @(
     '',
-    'Wenn Browser meldet "Adresse nicht gefunden":',
-    '  -> PRIMAER-URL oben nutzen (http://100.x.x.x:8501), NICHT die https://...ts.net URL',
+    'Typische Fehler und Ursache:',
+    '  - "Adresse nicht gefunden"     -> falsche URL oder .ts.net statt IP-Lesezeichen',
+    '  - "Connection failed"          -> PC/Streamlit nicht erreichbar (start.bat am PC)',
+    '  - Seite laedt kurz, dann Timeout -> WebSocket; PC-Neustart oder Keepalive fehlt',
+    '',
+    'Wenn es trotzdem haengt:',
+    '  -> Nur EIN Lesezeichen nutzen: ' + $primaryUrl,
     '  -> Android: Einstellungen -> Netzwerk -> Privates DNS -> AUS',
     '',
     'WICHTIG am Handy:',
@@ -47,8 +58,8 @@ $lines += @(
 
 Set-Content -Path $zugangPath -Value ($lines -join "`r`n") -Encoding UTF8
 
-$httpsNote = if ($TailscaleHttps) {
-    "<p style=`"color:#666;font-size:0.9em`">Optional (nur mit Tailscale-DNS): <a href=`"$TailscaleHttps`">$TailscaleHttps</a></p>"
+$fallbackNote = if ($optionalHttps) {
+    "<p style=`"color:#666;font-size:0.9em`">Optional (HTTPS): <a href=`"$optionalHttps`">$optionalHttps</a></p>"
 } else { '' }
 
 $html = @"
@@ -60,9 +71,8 @@ $html = @"
 <body style="font-family:sans-serif;text-align:center;margin-top:3em;padding:1em">
 <h2>DigiWiki</h2>
 <p><a href="$primaryUrl" style="font-size:1.4em">App oeffnen</a></p>
-<p style="color:#666">Tailscale am Handy muss verbunden sein.<br>
-URL beginnt mit <b>http://100.</b> und endet mit <b>:8501</b></p>
-$httpsNote
+<p style="color:#666">Tailscale am Handy muss verbunden sein (gruen).</p>
+$fallbackNote
 </body></html>
 "@
 Set-Content -Path $htmlPath -Value $html -Encoding UTF8

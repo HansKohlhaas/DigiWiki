@@ -59,6 +59,22 @@ LIVE_WEB_TTL_DAYS = max(1, int(os.getenv("DIGIWIKI_WEB_CACHE_TTL_DAYS", "7")))
 LIVE_WEB_TIMEOUT_S = max(10, int(os.getenv("DIGIWIKI_WEB_TIMEOUT_S", "45")))
 LIVE_WEB_MAX_CHARS = max(5000, int(os.getenv("DIGIWIKI_WEB_MAX_CHARS", "120000")))
 LIVE_WEB_BROWSER_CHANNEL = os.getenv("DIGIWIKI_LIVE_WEB_CHANNEL", "chrome").strip() or "chrome"
+LIVE_WEB_HEADLESS = os.getenv("DIGIWIKI_LIVE_WEB_HEADLESS", "true").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
+# Persistenter Chrome-Profilordner: Cookie-Zustimmungen bleiben zwischen Laeufen erhalten.
+LIVE_WEB_PERSISTENT_PROFILE = os.getenv("DIGIWIKI_LIVE_WEB_PERSISTENT", "true").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
+LIVE_WEB_USER_DATA_DIR = _env_path(
+    "DIGIWIKI_LIVE_WEB_USER_DATA",
+    str(BASE_DIR / "playwright_chrome_profile"),
+)
+LIVE_WEB_PFLEGE_PAUSE_S = max(0, int(os.getenv("DIGIWIKI_LIVE_WEB_PFLEGE_PAUSE_S", "4")))
 LIVE_WEB_MD_SPEICHERN = os.getenv("DIGIWIKI_LIVE_WEB_MD", "false").strip().lower() in (
     "1",
     "true",
@@ -82,6 +98,11 @@ SINGLE_SESSION_TAKEOVER = os.getenv("DIGIWIKI_SINGLE_SESSION", "false").strip().
     "yes",
 )
 ORAKEL_SYNTHESE_ENABLED = os.getenv("DIGIWIKI_ORAKEL_SYNTHESE", "true").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
+PERSONEN_KI_PLAUSIBILITAET = os.getenv("DIGIWIKI_PERSONEN_KI_PLAUSIBILITAET", "true").strip().lower() in (
     "1",
     "true",
     "yes",

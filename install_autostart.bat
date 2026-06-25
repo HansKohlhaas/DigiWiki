@@ -39,7 +39,7 @@ echo      Task: %TASK_NAME%
 echo      Skript: %START_BAT%
 echo      Entfernen: schtasks /delete /tn "%TASK_NAME%" /f
 echo.
-echo [EMPFOHLEN] Zusaetzlich install_keepalive_task.bat ausfuehren
-echo             ^(repariert alle 5 Min Tailscale + Streamlit im Hintergrund^)
+echo [EMPFOHLEN] Einmalig install_dauerbetrieb.bat ausfuehren
+echo             ^(Autostart + Keepalive + Watchdog + kein Sleep am Netzstrom^)
 echo.
 pause

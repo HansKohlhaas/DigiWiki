@@ -111,22 +111,30 @@ def drucke_beobachtete_ordner():
     for ordner in BEOBACHTETE_ORDNER:
         print(f"  - {ordner}")
 
-def ermittle_schicht_neu_anzahl(aktueller_gesamtstand):
+def _aktueller_schicht_schluessel() -> str:
     jetzt = datetime.now()
     schwellenwert = jetzt.replace(hour=22, minute=30, second=0, microsecond=0)
-    if jetzt < schwellenwert: 
+    if jetzt < schwellenwert:
         schwellenwert -= timedelta(days=1)
-    basis_schluessel = schwellenwert.strftime("%Y-%m-%d")
-    
+    return schwellenwert.strftime("%Y-%m-%d")
+
+
+def initialisiere_schicht_basis(gesamtstand: int) -> None:
+    """Schicht-Startstand einmal pro Nacht (ab 22:30) vor der Verarbeitung setzen."""
+    basis_schluessel = _aktueller_schicht_schluessel()
     snapshot_daten = lade_json(SNAPSHOT_DATEI)
-    
-    # Wenn für die aktuelle Schicht noch kein Startwert existiert, setzen wir ihn JETZT
     if basis_schluessel not in snapshot_daten:
-        snapshot_daten[basis_schluessel] = aktueller_gesamtstand
+        snapshot_daten[basis_schluessel] = gesamtstand
         speichere_json(SNAPSHOT_DATEI, snapshot_daten)
-        
-    basis_wert = snapshot_daten.get(basis_schluessel, aktueller_gesamtstand)
-    return max(0, aktueller_gesamtstand - basis_wert)
+
+
+def ermittle_schicht_neu_anzahl(aktueller_gesamtstand: int) -> int:
+    basis_schluessel = _aktueller_schicht_schluessel()
+    snapshot_daten = lade_json(SNAPSHOT_DATEI)
+    basis_wert = snapshot_daten.get(basis_schluessel)
+    if basis_wert is None:
+        return 0
+    return max(0, aktueller_gesamtstand - int(basis_wert))
 
 
 def _speichere_bericht_lokal(betreff: str, nachricht: str) -> Path:
@@ -192,7 +200,7 @@ def sende_bericht(
     nachricht += "\n"
 
     nachricht += "AKTUELLE SCHICHT (Seit 22:30 Uhr):\n"
-    nachricht += f"- Schicht-Zaehler (Index-Groesse): +{schicht_neu} Dateien\n\n"
+    nachricht += f"- Neu seit Schichtbeginn: +{schicht_neu} Dateien\n\n"
 
     nachricht += "DETAILS ZU DIESEM LAUF:\n"
     nachricht += f"- Jetzt im Durchlauf gelernt: {len(erfolgreich)}\n"
@@ -207,6 +215,21 @@ def sende_bericht(
         and crm_entfernt == 0
     ):
         nachricht += "\nAlles auf dem neuesten Stand — kein Re-Indexing noetig.\n"
+
+    if fehler:
+        nachricht += "\nFEHLERHAFTE DATEIEN:\n"
+        for eintrag in fehler:
+            if isinstance(eintrag, dict):
+                pfad = eintrag.get("pfad", "")
+                grund = eintrag.get("grund", "")
+            elif isinstance(eintrag, (tuple, list)) and len(eintrag) >= 2:
+                pfad, grund = eintrag[0], eintrag[1]
+            else:
+                pfad, grund = str(eintrag), ""
+            nachricht += f"  - {os.path.basename(pfad)}\n"
+            nachricht += f"    Pfad: {pfad}\n"
+            if grund:
+                nachricht += f"    Grund: {grund}\n"
 
     if quarantaene_neu:
         nachricht += "NEU IN QUARANTAENE:\n"
@@ -368,6 +391,7 @@ def aktualisiere_gehirn():
         gespeicherter_manifest = {pfad: meta for pfad, meta in gespeicherter_manifest.items() if meta}
 
     gesamtstand_vorher = len(gespeicherter_status)
+    initialisiere_schicht_basis(gesamtstand_vorher)
     crm_entfernt = 0
 
     quarantaene_liste = lade_json(QUARANTAENE_DATEI)
@@ -510,7 +534,8 @@ def aktualisiere_gehirn():
                             speichere_manifest(gespeicherter_manifest)
                             
                     except Exception as e:
-                        fehler_dateien.append(pfad)
+                        fehler_dateien.append({"pfad": pfad, "grund": str(e)})
+                        print(f"  ❌ Fehler: {os.path.basename(pfad)} — {e}")
                         
                     finally:
                         if 'loader' in locals():
@@ -544,7 +569,7 @@ def aktualisiere_gehirn():
     print(f"Neuer Datenstand : {gesamtstand_nachher} Dateien (wiki_stand)")
     print(f"Aktiv im Wiki    : {aktiv_nachher} Dateien (ohne CRM-Website-MD)")
     print("-" * 50)
-    print(f"📈 Schicht-Zähler : +{schicht_neu_anzahl} Dateien (seit 22:30 Uhr)")
+    print(f"📈 Schicht-Zähler : +{schicht_neu_anzahl} Dateien (neu seit 22:30 Uhr)")
     print("="*50)
 
     # E-Mail Bericht senden

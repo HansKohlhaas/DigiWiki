@@ -30,11 +30,7 @@ for /f "tokens=1,* delims==" %%a in ('powershell -NoProfile -ExecutionPolicy Byp
 )
 if defined TAILSCALE_IP (
     powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%digiwiki_write_zugang.ps1" -TailscaleIp "!TAILSCALE_IP!" -TailscaleHttps "!TAILSCALE_HTTPS!" -Root "%ROOT%" >nul 2>&1
-    if defined TAILSCALE_HTTPS (
-        set "HANDY_URL=!TAILSCALE_HTTPS!"
-    ) else (
-        set "HANDY_URL=http://!TAILSCALE_IP!:8501"
-    )
+    set "HANDY_URL=http://!TAILSCALE_IP!:8501"
 )
 echo.
 
@@ -65,8 +61,8 @@ echo 1. Tailscale-App oeffnen - muss "Verbunden" ^(gruen^) zeigen
 echo 2. Privates DNS am Android: AUS ^(nicht Automatisch^)
 echo 3. STABILE URL ^(Lesezeichen in Chrome/Safari - KEINE Link-Vorschau^):
 if defined TAILSCALE_HTTPS (
-    echo    PRIMAER:  !TAILSCALE_HTTPS!
-    if defined TAILSCALE_IP echo    Fallback: http://!TAILSCALE_IP!:8501
+    echo    PRIMAER:  http://!TAILSCALE_IP!:8501
+    echo    Optional: !TAILSCALE_HTTPS!
 ) else if defined HANDY_URL (
     echo    !HANDY_URL!
 ) else if exist "%ROOT%digiwiki_zugang.txt" (

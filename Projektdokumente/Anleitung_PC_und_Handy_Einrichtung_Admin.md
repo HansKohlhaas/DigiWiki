@@ -277,6 +277,25 @@ Alternativ: Datei **`digiwiki_handy.html`** aus dem Projektordner aufs Handy kop
 | `digiwiki_helpers.ps1` | Hält Tailscale-Verbindung stabil (Hintergrund) |
 | `digiwiki_zugang.txt` | **Deine aktuellen URLs** (nach jedem Start aktualisiert) |
 | `digiwiki_handy.html` | Einfache Link-Seite fürs Handy |
+| `9_wiki_waechter.py` | Nächtlicher Wiki-Index-Lauf (Chroma + `wiki_stand.json`) |
+| `install_wiki_waechter_nacht.bat` | Task Scheduler: Wächter täglich um 22:35 |
+
+### Wiki-Wächter und E-Mail-Bericht
+
+Der Wächter läuft nachts (oder manuell: `.venv\Scripts\python.exe 9_wiki_waechter.py`). Nach jedem Lauf:
+
+- **Lokal:** `wiki_waechter_bericht.txt`
+- **Optional per E-Mail** (`.env`: `EMAIL_ABSENDER`, `EMAIL_PASSWORT`, `EMAIL_EMPFAENGER`, `SMTP_SERVER`, `SMTP_PORT`)
+
+Wichtige Zeilen im Bericht:
+
+| Zeile | Bedeutung |
+|-------|-----------|
+| **Neu seit Schichtbeginn** | Wie viele Dateien seit 22:30 Uhr im Index dazukamen (Schicht-Basis wird vor dem Einlesen gesetzt) |
+| **Jetzt im Durchlauf gelernt** | Nur dieser eine Lauf |
+| **Fehlerhaft** | Anzahl; darunter Dateiname, voller Pfad und **Grund** (z. B. defektes PDF) |
+
+Bei falschem Schicht-Zähler (z. B. nach manuellem Eingriff): `wiki_schicht_snapshot.json` löschen — beim nächsten Lauf wird die Basis neu gesetzt.
 
 ### Diagnose bei Problemen (PC)
 

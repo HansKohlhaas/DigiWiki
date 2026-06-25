@@ -1,6 +1,6 @@
 # DigiBest Wiki – Projektstatus
 
-**Stand:** 17.06.2026  
+**Stand:** 24.06.2026  
 **Branch:** `main`  
 **Zweck:** Technischer Softwarestand und Handover
 
@@ -10,7 +10,7 @@
 
 DigiWiki ist eine **Streamlit-Web-UI** (`15_wiki_web_ui.py`) für CRM-Abfragen, **Vier-Stufen-Wissens-Kaskade** (SQL → Live-Web → MD → KI-Synthese), Wiki-RAG und Remote-Zugang per Tailscale.
 
-**Neu in dieser Session:** Wissens-Kaskade (Phasen A–C), Produktsuche über `abdaartikel`, KI-Briefing, CRM-MD aus Chroma, Verfahren-Wiki, Handy-Stabilität (Keepalive), Schulungsdokumentation.
+**Neu in dieser Session:** Wissens-Kaskade (Phasen A–C), Produktsuche über `abdaartikel`, KI-Briefing, CRM-MD aus Chroma, Verfahren-Wiki, **Datenbankpflege (KI-Live-Web)**, Funktionszuordnung über `crm_funktion_synonyme`.
 
 ---
 
@@ -38,6 +38,21 @@ DigiWiki ist eine **Streamlit-Web-UI** (`15_wiki_web_ui.py`) für CRM-Abfragen, 
 | Relationsschicht (`db_*.csv`, `sql_db_meta.py`) | ✅ |
 | NL2SQL + 11 Fragetypen | ✅ |
 
+### Datenbankpflege (KI-Live-Web)
+
+| Feature | Modul | Status |
+|---------|-------|--------|
+| Hauptreiter **Datenbankpflege** in UI | `15_wiki_web_ui.py` | ✅ |
+| Kandidaten ohne `crm_personen` (Akquiseklasse 1–4) | `datenbank_pflege.py` | ✅ |
+| Live-Web Impressum → Personen | `firmen_live_recherche.py`, `firmen_live_personen.py` | ✅ |
+| URL-Prüfung vor Live-Abruf | `pruefe_url_fuer_live_web()` | ✅ |
+| Persistenter Chrome-Profilordner (Cookie-Wände) | `config.py`, Playwright | ✅ |
+| KI-Plausibilität (Anrede, Funktion) | `firmen_live_personen.py` | ✅ |
+| Funktionszuordnung über Synonym-Tabelle | `crm_funktion_mapping.py` → `crm_funktion_synonyme` | ✅ |
+| Auto-Pflege: Dauerbetrieb / Intervalle, Datensatz-Bereich | UI + `datenbank_pflege.py` | ✅ |
+| CRM-Schreiben (`crm_personen`, Stammdaten) | `firmen_live_personen.py` | ✅ |
+| Synonym-Mapping (Batch, TF-IDF) | `crm_funktion_mapping.py` / `.bat` | ✅ (CLI) |
+
 ### Infrastruktur
 
 | Feature | Status |
@@ -46,6 +61,7 @@ DigiWiki ist eine **Streamlit-Web-UI** (`15_wiki_web_ui.py`) für CRM-Abfragen, 
 | Keepalive-Task (`digiwiki_keepalive.ps1`) | ✅ |
 | Single-Session parallel PC+Handy (`DIGIWIKI_SINGLE_SESSION=false`) | ✅ |
 | Wiki-Wächter CRM-Bereinigung | ✅ |
+| Wiki-Wächter E-Mail-Bericht (Schicht-Zähler, Fehlerdetails) | ✅ |
 | Autostart / Desktop-Verknüpfung | ✅ |
 
 ---
@@ -93,4 +109,21 @@ Siehe [PROJEKT_TODO.md](PROJEKT_TODO.md) und [Roadmap_Wissens_Kaskade.md](Roadma
 |------|--------|
 | SQL-Regression | `sql_regression_test.bat` |
 | Live-Web | `firmen_live_test.bat` |
+| Funktion-Synonyme mappen | `crm_funktion_mapping.bat` |
 | Wiki-Wächter | `python 9_wiki_waechter.py` |
+
+### Wiki-Wächter (`9_wiki_waechter.py`)
+
+Nächtlicher Lauf (Task Scheduler, typisch 22:35 via `install_wiki_waechter_nacht.bat`): scannt `WATCH_ROOTS`, aktualisiert Chroma-Index und `wiki_stand.json`.
+
+**E-Mail-Bericht** (wenn `EMAIL_*` und `SMTP_*` in `.env` gesetzt):
+
+| Feld | Bedeutung |
+|------|-----------|
+| Vorheriger / Neuer Stand | Anzahl Dateien in `wiki_stand.json` |
+| Neu seit Schichtbeginn | Dateien seit 22:30 Uhr (Basis wird **vor** dem Lauf in `wiki_schicht_snapshot.json` gesetzt) |
+| Jetzt im Durchlauf gelernt | In diesem Durchlauf neu indexiert |
+| Fehlerhaft | Anzahl; darunter **Pfad und Grund** je Datei |
+| Neue Quarantäne | Dateien über Größenlimit (`wiki_quarantaene.json`) |
+
+Lokale Kopie: `wiki_waechter_bericht.txt` im Projektordner.

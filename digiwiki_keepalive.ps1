@@ -6,6 +6,7 @@ param(
 
 $ErrorActionPreference = 'SilentlyContinue'
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
+. (Join-Path $root 'digiwiki_erreichbarkeit.ps1')
 $logFile = Join-Path $root 'digiwiki_keepalive.log'
 $streamlitStarter = Join-Path $root 'digiwiki_start_streamlit.ps1'
 $tailscaleFix = Join-Path $root 'digiwiki_tailscale_fix.ps1'
@@ -25,15 +26,14 @@ function Write-Log {
 }
 
 function Test-StreamlitHealthy {
-    try {
-        $code = (& curl.exe -sS -o NUL -w '%{http_code}' --max-time 8 'http://127.0.0.1:8501/_stcore/health' 2>$null)
-        return ($code -eq '200')
-    } catch {
-        return $false
-    }
+    return Test-DigiWikiStreamlitLocal
 }
 
 function Stop-StreamlitOnPort {
+    $portPid = Get-DigiWikiStreamlitPortPid
+    if ($portPid -gt 0) {
+        Stop-Process -Id $portPid -Force -ErrorAction SilentlyContinue
+    }
     Get-NetTCPConnection -LocalPort 8501 -ErrorAction SilentlyContinue |
         ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }
     $pidFile = Join-Path $env:TEMP 'digiwiki_streamlit.pid'
@@ -47,6 +47,11 @@ function Stop-StreamlitOnPort {
     Start-Sleep -Seconds 2
 }
 
+function Test-ServeWebSocket {
+    param([string]$DnsName)
+    return Test-DigiWikiServeWebSocket -DnsName $DnsName
+}
+
 function Ensure-TailscaleOnline {
     $svc = Get-Service -Name 'Tailscale' -ErrorAction SilentlyContinue
     if ($svc -and $svc.Status -ne 'Running') {
@@ -54,6 +59,7 @@ function Ensure-TailscaleOnline {
         Start-Service -Name 'Tailscale' -ErrorAction SilentlyContinue
         Start-Sleep -Seconds 3
     }
+    $status = $null
     $online = $false
     try {
         $status = (tailscale status --json 2>$null | ConvertFrom-Json)
@@ -65,38 +71,129 @@ function Ensure-TailscaleOnline {
         if (Test-Path $tailscaleFix) {
             & powershell -NoProfile -ExecutionPolicy Bypass -File $tailscaleFix | Out-Null
         }
+        return
+    }
+    $dns = ($status.Self.DNSName -replace '\.$', '')
+    if ($dns -and -not (Test-ServeWebSocket -DnsName $dns)) {
+        Write-Log 'Tailscale Serve/WebSocket defekt -> neu einrichten'
+        tailscale serve reset 2>$null | Out-Null
+        tailscale serve --bg 8501 2>$null | Out-Null
+        Start-Sleep -Seconds 2
+    }
+    $phone = $status.Peer.PSObject.Properties.Value |
+        Where-Object { $_.OS -match 'android|ios' } |
+        Select-Object -First 1
+    if ($phone -and [string]$phone.Online -ne 'True') {
+        Write-Log "Handy offline ($($phone.HostName)) - Tailscale-App am Handy oeffnen"
     }
 }
 
 function Ensure-StreamlitHealthy {
-    $portOpen = [bool](Get-NetTCPConnection -LocalPort 8501 -State Listen -ErrorAction SilentlyContinue)
-    if ($portOpen -and (Test-StreamlitHealthy)) {
+    $pidFile = Join-Path $env:TEMP 'digiwiki_streamlit.pid'
+    $doppelt = Stop-DoppelteStreamlitInstanzen
+    if ($doppelt -gt 0) {
+        Write-Log "Doppelte Streamlit-Instanzen beendet: $doppelt"
+        Start-Sleep -Seconds 2
+    }
+
+    $portPid = Get-DigiWikiStreamlitPortPid
+    if ($portPid -gt 0) {
+        $filePid = ''
+        if (Test-Path $pidFile) { $filePid = (Get-Content $pidFile -Raw).Trim() }
+        if ($filePid -and ([string]$portPid -ne $filePid)) {
+            Write-Log "PID-Datei veraltet ($filePid vs Port $portPid) -> korrigiere"
+            Sync-DigiWikiStreamlitPidFile -PidFile $pidFile | Out-Null
+        }
+    }
+
+    $reach = Get-DigiWikiErreichbarkeit
+    Write-DigiWikiErreichbarkeitStatus -Status $reach -Root $root
+
+    $portOpen = $portPid -gt 0
+    $localOk = $reach.LokalHealth
+    $externOk = $reach.ExternOk
+
+    if ($portOpen -and $localOk -and $externOk) {
         return
     }
-    if ($portOpen) {
-        Write-Log 'Port 8501 offen, aber Health-Check fehlgeschlagen -> Streamlit neu starten'
-    } else {
-        Write-Log 'Port 8501 geschlossen -> Streamlit starten'
+
+    if ($portOpen -and $localOk -and -not $externOk -and $reach.TailscaleDns) {
+        Write-Log 'Lokal OK, extern nicht erreichbar -> Tailscale Serve reparieren'
+        Repair-DigiWikiTailscaleServe -DnsName $reach.TailscaleDns
+        $reach = Get-DigiWikiErreichbarkeit
+        if ($reach.ExternOk) {
+            Write-Log 'Extern nach Serve-Reparatur OK'
+            Write-DigiWikiErreichbarkeitStatus -Status $reach -Root $root
+            return
+        }
+        Write-Log 'Extern weiterhin defekt -> Streamlit neu starten'
     }
+
+    if ($portOpen -and -not $localOk) {
+        Write-Log 'Port 8501 offen, aber Health-Check fehlgeschlagen -> Streamlit neu starten'
+    } elseif (-not $portOpen) {
+        Write-Log 'Port 8501 geschlossen -> Streamlit starten'
+    } elseif ($portOpen -and $localOk -and -not $externOk) {
+        Write-Log 'Streamlit-Neustart nach fehlgeschlagener Serve-Reparatur'
+    }
+
     Stop-StreamlitOnPort
     if (Test-Path $streamlitStarter) {
         & powershell -NoProfile -ExecutionPolicy Bypass -File $streamlitStarter | Out-Null
-        Start-Sleep -Seconds 3
-        if (Test-StreamlitHealthy) {
-            Write-Log 'Streamlit nach Neustart OK'
+        Start-Sleep -Seconds 4
+        if ($reach.TailscaleDns) {
+            Repair-DigiWikiTailscaleServe -DnsName $reach.TailscaleDns
+        }
+        $reach = Get-DigiWikiErreichbarkeit
+        Write-DigiWikiErreichbarkeitStatus -Status $reach -Root $root
+        if ($reach.LokalHealth) {
+            if ($reach.ExternOk) {
+                Write-Log 'Streamlit + externe Erreichbarkeit OK'
+            } else {
+                Write-Log 'WARNUNG: Streamlit lokal OK, extern weiterhin defekt'
+            }
         } else {
             Write-Log 'WARNUNG: Streamlit startet nicht sauber'
         }
     }
 }
 
+function Test-HelperRunning {
+    $pidFile = Join-Path $env:TEMP 'digiwiki_helper.pid'
+    if (Test-Path $pidFile) {
+        $hpid = Get-Content $pidFile -ErrorAction SilentlyContinue
+        if ($hpid -match '^\d+$') {
+            $proc = Get-Process -Id ([int]$hpid) -ErrorAction SilentlyContinue
+            if ($proc -and $proc.ProcessName -match '^powershell') {
+                return $true
+            }
+        }
+    }
+    $alive = Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -match 'digiwiki_helpers\.ps1' } |
+        Select-Object -First 1
+    return [bool]$alive
+}
+
 function Ensure-HelperRunning {
+    if (Test-HelperRunning) { return }
+    Write-Log 'Watchdog fehlt -> starte digiwiki_helpers.ps1'
     if (Test-Path $helperStarter) {
-        & powershell -NoProfile -ExecutionPolicy Bypass -File $helperStarter | Out-Null
+        $out = & powershell -NoProfile -ExecutionPolicy Bypass -File $helperStarter 2>&1
+        foreach ($line in @($out)) {
+            if ($line) { Write-Log "  helper: $line" }
+        }
+        Start-Sleep -Seconds 2
+        if (Test-HelperRunning) {
+            Write-Log 'Watchdog gestartet'
+        } else {
+            Write-Log 'WARNUNG: Watchdog startet nicht'
+        }
     }
 }
 
 Write-Log '--- Keepalive-Lauf ---'
+Ensure-HelperRunning
 Ensure-TailscaleOnline
 Ensure-StreamlitHealthy
 Ensure-HelperRunning

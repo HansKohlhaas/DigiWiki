@@ -11,30 +11,40 @@ if (-not (Test-Path $script)) {
 
 $existing = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
 if ($existing) {
-    Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
+    try {
+        Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction Stop
+    } catch {
+        Write-Host "HINWEIS: Task-Update braucht Admin-Rechte. Bitte install_dauerbetrieb.bat als Administrator ausfuehren."
+        Write-Host "       Bestehender Task bleibt aktiv (ggf. noch alle 5 Min)."
+        exit 0
+    }
 }
 
 $action = New-ScheduledTaskAction `
     -Execute 'powershell.exe' `
     -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$script`" -Quiet"
 
-$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) `
-    -RepetitionInterval (New-TimeSpan -Minutes 5) `
+$triggerLogon = New-ScheduledTaskTrigger -AtLogOn
+$triggerRepeat = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) `
+    -RepetitionInterval (New-TimeSpan -Minutes 2) `
     -RepetitionDuration (New-TimeSpan -Days 3650)
 
 $settings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries `
     -DontStopIfGoingOnBatteries `
     -StartWhenAvailable `
-    -ExecutionTimeLimit (New-TimeSpan -Minutes 2)
+    -ExecutionTimeLimit (New-TimeSpan -Minutes 2) `
+    -MultipleInstances IgnoreNew `
+    -RestartCount 3 `
+    -RestartInterval (New-TimeSpan -Minutes 1)
 
 Register-ScheduledTask `
     -TaskName $taskName `
     -Action $action `
-    -Trigger $trigger `
+    -Trigger @($triggerLogon, $triggerRepeat) `
     -Settings $settings `
-    -Description 'DigiWiki: Tailscale + Streamlit alle 5 Min pruefen/reparieren' `
+    -Description 'DigiWiki: Watchdog + Tailscale + Streamlit alle 2 Min, sofort beim Login' `
     -RunLevel Limited | Out-Null
 
-Write-Host "OK: Task '$taskName' alle 5 Minuten aktiv"
+Write-Host "OK: Task '$taskName' beim Login + alle 2 Minuten aktiv"
 Write-Host "Log: $(Join-Path $root 'digiwiki_keepalive.log')"

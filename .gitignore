@@ -28,7 +28,12 @@ NAECHSTER_CHAT.md
 9_wiki_waechter0.py
 test_vdb.py
 live_web_cache.json
+playwright_chrome_profile/
+playwright_chrome_profile/storage_state.json
 digiwiki_keepalive.log
+digiwiki_erreichbarkeit.json
+digiwiki_dauerbetrieb_diag.txt
+mapped_funktions_ids.csv
 wiki_waechter_bericht.txt
 Antworten/
 Adressen/

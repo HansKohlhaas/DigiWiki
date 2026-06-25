@@ -5,8 +5,11 @@ $stopped = [System.Collections.Generic.HashSet[int]]::new()
 function Stop-DigiWikiPid {
     param([int]$ProcessId)
     if ($ProcessId -le 4) { return }
-    if ($stopped.Add($ProcessId)) {
-        Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
+    if (-not $stopped.Add($ProcessId)) { return }
+    Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 200
+    if (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue) {
+        & taskkill.exe /F /T /PID $ProcessId 2>$null | Out-Null
     }
 }
 
@@ -37,6 +40,24 @@ function Collect-Tree {
         ForEach-Object { Collect-Tree $_.ProcessId }
 }
 Collect-Tree $ownPid
+
+# 0) Watchdog zuerst stoppen (startet sonst Streamlit waehrend des Cleanups neu)
+$helperPidFile = Join-Path $env:TEMP 'digiwiki_helper.pid'
+if (Test-Path $helperPidFile) {
+    $hpid = (Get-Content $helperPidFile -Raw).Trim()
+    if ($hpid -match '^\d+$') {
+        Stop-Tree ([int]$hpid)
+    }
+}
+Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
+    Where-Object { [string]$_.CommandLine -match 'digiwiki_helpers\.ps1' } |
+    ForEach-Object { Stop-Tree $_.ProcessId }
+
+# 0b) Port 8501 sofort freimachen (WMI liefert oft keine Kommandozeile mehr)
+$stopScript = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'digiwiki_stop_streamlit.ps1'
+if (Test-Path $stopScript) {
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $stopScript | Out-Null
+}
 
 # 1) Prozesse anhand der Kommandozeile (zuverlaessiger als Fenstertitel)
 Get-CimInstance Win32_Process |
@@ -73,13 +94,16 @@ Get-Process -Name cmd -ErrorAction SilentlyContinue |
     }
 
 # 3) Alles, was noch auf Port 8501 lauscht
-1..3 | ForEach-Object {
-    Get-NetTCPConnection -LocalPort 8501 -ErrorAction SilentlyContinue |
-        ForEach-Object { Stop-Tree $_.OwningProcess }
+1..8 | ForEach-Object {
+    Get-NetTCPConnection -LocalPort 8501 -State Listen -ErrorAction SilentlyContinue |
+        ForEach-Object {
+            Stop-Tree $_.OwningProcess
+            Stop-DigiWikiPid $_.OwningProcess
+        }
     if (-not (Get-NetTCPConnection -LocalPort 8501 -State Listen -ErrorAction SilentlyContinue)) {
         return
     }
-    Start-Sleep -Milliseconds 400
+    Start-Sleep -Milliseconds 600
 }
 
 Remove-Item -LiteralPath (Join-Path $env:TEMP 'digiwiki_helper.pid') -Force -ErrorAction SilentlyContinue

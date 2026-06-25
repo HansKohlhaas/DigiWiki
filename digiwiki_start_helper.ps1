@@ -20,4 +20,17 @@ Start-Process powershell -ArgumentList @(
     '-NoProfile', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass',
     '-File', $helper, '-WatchPid', '0'
 ) -WindowStyle Hidden | Out-Null
-Write-Host 'HELPER=GESTARTET'
+
+for ($i = 0; $i -lt 30; $i++) {
+    Start-Sleep -Milliseconds 500
+    $alive = Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { [string]$_.CommandLine -match 'digiwiki_helpers\.ps1' } |
+        Select-Object -First 1
+    if ($alive) {
+        [int]$alive.ProcessId | Out-File -FilePath $pidFile -Encoding ascii -Force
+        Write-Host "HELPER=GESTARTET PID=$($alive.ProcessId)"
+        exit 0
+    }
+}
+Write-Host 'HELPER=FEHLER'
+exit 1

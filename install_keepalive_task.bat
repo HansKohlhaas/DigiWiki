@@ -16,12 +16,12 @@ if not errorlevel 1 (
     schtasks /delete /tn "%TASK_NAME%" /f >nul
 )
 
-echo [INFO] Erstelle Task: alle 5 Minuten Verbindung pruefen/reparieren ...
+echo [INFO] Erstelle Task: beim Login + alle 2 Minuten pruefen/reparieren ...
 powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%digiwiki_install_keepalive_task.ps1"
 
 echo.
-echo [OK] Keepalive-Task aktiv (alle 5 Min).
-echo      Prueft: Tailscale online, Streamlit Health, Hintergrund-Helfer
+echo [OK] Keepalive-Task aktiv (Login + alle 2 Min).
+echo      Prueft: Watchdog, Tailscale online, Serve/WebSocket, Streamlit Health
 echo      Log: digiwiki_keepalive.log
 echo      Entfernen: schtasks /delete /tn "%TASK_NAME%" /f
 echo.

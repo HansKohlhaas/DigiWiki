@@ -97,13 +97,51 @@ if "frage_kontext" not in st.session_state:
     from frage_kontext import FrageKontext
 
     st.session_state.frage_kontext = FrageKontext().to_dict()
+if "dp_aktiv" not in st.session_state:
+    st.session_state.dp_aktiv = False
+if "dp_index" not in st.session_state:
+    st.session_state.dp_index = 0
+if "dp_ergebnisse" not in st.session_state:
+    st.session_state.dp_ergebnisse = []
+if "dp_akquiseklasse" not in st.session_state:
+    st.session_state.dp_akquiseklasse = 1
+if "dp_modus" not in st.session_state:
+    st.session_state.dp_modus = "dauerbetrieb"
+if "dp_intervall_min" not in st.session_state:
+    st.session_state.dp_intervall_min = 5
+if "dp_ds_von" not in st.session_state:
+    st.session_state.dp_ds_von = 1
+if "dp_ds_bis" not in st.session_state:
+    st.session_state.dp_ds_bis = 1
+if "dp_pause_art" not in st.session_state:
+    st.session_state.dp_pause_art = "manuell"
+if "dp_manuell_bereit" not in st.session_state:
+    st.session_state.dp_manuell_bereit = False
+if "dp_ds_gesamt" not in st.session_state:
+    st.session_state.dp_ds_gesamt = 0
+if "dp_naechste_zeit" not in st.session_state:
+    st.session_state.dp_naechste_zeit = None
+if "dp_kandidaten_key" not in st.session_state:
+    st.session_state.dp_kandidaten_key = ""
+if "dp_untertab" not in st.session_state:
+    st.session_state.dp_untertab = "einstellungen"
+if "dp_goto_untertab" not in st.session_state:
+    st.session_state.dp_goto_untertab = None
+if "dp_fertig_meldung" not in st.session_state:
+    st.session_state.dp_fertig_meldung = None
+if "dp_lauf_ids" not in st.session_state:
+    st.session_state.dp_lauf_ids = []
+if "dp_lauf_rows" not in st.session_state:
+    st.session_state.dp_lauf_rows = []
+if "dp_browser_session" not in st.session_state:
+    st.session_state.dp_browser_session = None
 import re
 import os
 import io
 import json
 import hashlib
 import speech_recognition as sr
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 import win32com.client
 import pythoncom
 import requests
@@ -1694,6 +1732,7 @@ if "chat_historie" not in st.session_state: st.session_state.chat_historie = []
 _haupttab_labels = {
     "chat": "💬 Wiki & Daten",
     "mails": "📬 Mails & Kontakte",
+    "dbpflege": "🛠️ Datenbankpflege",
     "agenda": "📅 Agenda & Notizen",
 }
 haupttab = st.radio(
@@ -2365,6 +2404,409 @@ elif haupttab == "mails":
                                 st.success("Versandt!")
                                 del st.session_state[f"edit_{i}"]
                                 st.rerun()
+
+# --- REITER: DATENBANKPFLEGE ---
+elif haupttab == "dbpflege":
+    from datenbank_pflege import (
+        PFLEGE_QUELLE,
+        ergebnis_zu_dict,
+        lade_pflege_kandidaten,
+        pflege_eine_firma,
+    )
+    from firmen_live_recherche import LiveWebBrowserSession
+    from config import LIVE_WEB_HEADLESS
+
+    def _dp_browser_schliessen():
+        sess = st.session_state.dp_browser_session
+        if sess is not None:
+            try:
+                sess.close()
+            except Exception:
+                pass
+        st.session_state.dp_browser_session = None
+
+    def _dp_abschluss_aufraeumen():
+        st.session_state.dp_fertig_meldung = None
+        st.session_state.dp_lauf_rows = []
+        st.session_state.dp_lauf_ids = []
+        st.session_state.dp_kandidaten_key = ""
+        st.session_state.dp_index = 0
+        st.session_state.dp_aktiv = False
+        _dp_browser_schliessen()
+
+    def _dp_intervall_optionen(anzahl_kandidaten: int) -> None:
+        max_ds = max(1, int(anzahl_kandidaten))
+        st.caption(f"Kandidaten in dieser Klasse: **{max_ds}** (Nummerierung 1 … {max_ds})")
+        col_von, col_bis = st.columns(2)
+        with col_von:
+            st.number_input(
+                "Von Datensatz",
+                min_value=1,
+                max_value=max_ds,
+                value=min(int(st.session_state.dp_ds_von), max_ds),
+                key="dp_ds_von",
+                help="Erster Datensatz in der Warteschlange (1 = erste Firma).",
+            )
+        with col_bis:
+            st.number_input(
+                "Bis Datensatz",
+                min_value=1,
+                max_value=max_ds,
+                value=min(max(int(st.session_state.dp_ds_bis), int(st.session_state.dp_ds_von)), max_ds),
+                key="dp_ds_bis",
+                help="Letzter Datensatz in diesem Lauf.",
+            )
+        st.radio(
+            "Pause zwischen Datensätzen",
+            options=["manuell", "minuten"],
+            format_func=lambda k: "Manuell (nächster Datensatz per Klick)" if k == "manuell" else "Automatisch (Minuten)",
+            horizontal=True,
+            key="dp_pause_art",
+        )
+        if st.session_state.dp_pause_art == "minuten":
+            st.number_input(
+                "Pause (Minuten)",
+                min_value=1,
+                max_value=120,
+                value=int(st.session_state.dp_intervall_min),
+                key="dp_intervall_min",
+            )
+
+    def _dp_klasse_gewechselt():
+        _dp_browser_schliessen()
+        st.session_state.dp_index = 0
+        st.session_state.dp_kandidaten_key = ""
+        st.session_state.dp_naechste_zeit = None
+        st.session_state.dp_fertig_meldung = None
+        st.session_state.dp_lauf_ids = []
+        st.session_state.dp_lauf_rows = []
+        st.session_state.dp_aktiv = False
+        st.session_state.dp_manuell_bereit = False
+
+    def _dp_pflege_starten():
+        df_start = lade_pflege_kandidaten(int(st.session_state.dp_akquiseklasse))
+        alle = df_start.to_dict("records")
+        gesamt_klasse = len(alle)
+        st.session_state.dp_ds_gesamt = gesamt_klasse
+        von = max(1, int(st.session_state.dp_ds_von))
+        bis = max(von, int(st.session_state.dp_ds_bis))
+        if alle:
+            von = min(von, gesamt_klasse)
+            bis = min(bis, gesamt_klasse)
+            alle = alle[von - 1 : bis]
+        st.session_state.dp_lauf_rows = alle
+        st.session_state.dp_lauf_von = von
+        st.session_state.dp_lauf_bis = bis
+        st.session_state.dp_lauf_ids = [
+            str(r.get("kundennumm", "")).strip()
+            for r in st.session_state.dp_lauf_rows
+            if str(r.get("kundennumm", "")).strip()
+        ]
+        st.session_state.dp_aktiv = bool(st.session_state.dp_lauf_ids)
+        st.session_state.dp_index = 0
+        st.session_state.dp_naechste_zeit = None
+        st.session_state.dp_kandidaten_key = (
+            f"{st.session_state.dp_akquiseklasse}:{len(st.session_state.dp_lauf_ids)}"
+        )
+        st.session_state.dp_fertig_meldung = None
+        st.session_state.dp_manuell_bereit = False
+        st.session_state.dp_goto_untertab = "auto"
+
+    def _dp_pflege_abschliessen(gesamt_lauf: int):
+        _dp_browser_schliessen()
+        st.session_state.dp_aktiv = False
+        letzte = st.session_state.dp_ergebnisse[:gesamt_lauf]
+        erfolge = sum(1 for e in letzte if e.get("status") == "ok")
+        fehler_cnt = len(letzte) - erfolge
+        st.session_state.dp_fertig_meldung = {
+            "klasse": int(st.session_state.dp_akquiseklasse),
+            "gesamt": gesamt_lauf,
+            "erfolge": erfolge,
+            "fehler": fehler_cnt,
+            "zeit": datetime.now().strftime("%H:%M:%S"),
+        }
+        st.session_state.dp_lauf_rows = []
+        st.session_state.dp_lauf_ids = []
+        st.session_state.dp_index = 0
+        if hasattr(st, "toast"):
+            st.toast(
+                f"Akquiseklasse {st.session_state.dp_akquiseklasse} abgeschlossen",
+                icon="✅",
+            )
+
+    if st.session_state.dp_goto_untertab:
+        st.session_state.dp_untertab = st.session_state.dp_goto_untertab
+        st.session_state.dp_goto_untertab = None
+
+    st.markdown("#### Datenbankpflege (KI)")
+    st.caption(
+        f"Live-Web per **Playwright + installiertem Chrome**. Pro Firma: **Startseite**, "
+        f"dann **ein Impressum**. GF-Namen: Regel-Filter + **KI-Plausibilitaet** vor CRM-Import. "
+        f"CRM: `update_status` = **{PFLEGE_QUELLE}**."
+    )
+
+    if st.session_state.dp_fertig_meldung:
+        m = st.session_state.dp_fertig_meldung
+        st.success(
+            f"**Datenbankpflege beendet** — Akquiseklasse **{m['klasse']}** vollständig bearbeitet "
+            f"({m['gesamt']} Firmen, {m['erfolge']} mit Daten, {m['fehler']} Fehler/übersprungen). "
+            f"Abgeschlossen um {m['zeit']}."
+        )
+        if st.button("Meldung schließen", key="dp_fertig_ok"):
+            _dp_abschluss_aufraeumen()
+            st.rerun()
+
+    st.selectbox(
+        "Akquiseklasse",
+        options=[1, 2, 3, 4],
+        index=max(0, int(st.session_state.dp_akquiseklasse) - 1),
+        help="Nur Firmen dieser Klasse ohne bestehende crm_personen-Zeile.",
+        key="dp_akquiseklasse",
+        on_change=_dp_klasse_gewechselt,
+    )
+
+    kandidaten_aktuell = lade_pflege_kandidaten(int(st.session_state.dp_akquiseklasse))
+    if st.session_state.dp_lauf_rows and st.session_state.dp_aktiv:
+        kandidaten = pd.DataFrame(st.session_state.dp_lauf_rows)
+        gesamt = len(st.session_state.dp_lauf_rows)
+    else:
+        kandidaten = kandidaten_aktuell
+        gesamt = len(kandidaten)
+
+    kandidaten_key = f"{st.session_state.dp_akquiseklasse}:{gesamt}"
+    if (
+        not st.session_state.dp_aktiv
+        and not st.session_state.dp_fertig_meldung
+        and st.session_state.dp_kandidaten_key != kandidaten_key
+    ):
+        st.session_state.dp_kandidaten_key = kandidaten_key
+        st.session_state.dp_index = 0
+
+    index = int(st.session_state.dp_index)
+    fertig = (
+        st.session_state.dp_fertig_meldung is not None
+        or gesamt == 0
+        or (index >= gesamt and not st.session_state.dp_aktiv)
+    )
+
+    dp_untertab = st.radio(
+        "Datenbankpflege-Bereich",
+        options=["einstellungen", "auto", "protokoll"],
+        format_func=lambda k: {
+            "einstellungen": "⚙ Einstellungen",
+            "auto": "▶ Auto-Pflege",
+            "protokoll": "📋 Protokoll",
+        }[k],
+        horizontal=True,
+        label_visibility="collapsed",
+        key="dp_untertab",
+    )
+
+    if dp_untertab == "einstellungen":
+        st.session_state.dp_modus = st.radio(
+            "Betriebsmodus",
+            options=["dauerbetrieb", "intervall"],
+            format_func=lambda m: "Dauerbetrieb (fortlaufend)" if m == "dauerbetrieb" else "Intervalle",
+            horizontal=True,
+            key="dp_modus_select",
+        )
+        if st.session_state.dp_modus == "intervall":
+            _dp_intervall_optionen(len(kandidaten_aktuell))
+        col_start, col_stop, col_reset = st.columns(3)
+        with col_start:
+            if st.button("▶ Start", use_container_width=True, key="dp_btn_start"):
+                _dp_pflege_starten()
+                st.rerun()
+        with col_stop:
+            if st.button("⏸ Stopp", use_container_width=True, key="dp_btn_stop"):
+                st.session_state.dp_aktiv = False
+                _dp_browser_schliessen()
+                st.rerun()
+        with col_reset:
+            if st.button("↺ Zurücksetzen", use_container_width=True, key="dp_btn_reset"):
+                _dp_abschluss_aufraeumen()
+                st.session_state.dp_ergebnisse = []
+                st.session_state.dp_naechste_zeit = None
+                st.session_state.dp_manuell_bereit = False
+                st.rerun()
+        if not st.session_state.dp_aktiv and not st.session_state.dp_fertig_meldung:
+            st.info(
+                f"Akquiseklasse **{st.session_state.dp_akquiseklasse}** — "
+                f"**{len(kandidaten_aktuell)}** Kandidaten ohne crm_personen. "
+                f"Modus und Klasse wählen, dann **Start**."
+            )
+        st.caption(
+            f"Akquiseklasse **{st.session_state.dp_akquiseklasse}**, "
+            f"Modus **{st.session_state.dp_modus}**"
+            + (
+                f", Datensätze **{st.session_state.dp_ds_von}–{st.session_state.dp_ds_bis}**"
+                + (
+                    ", Pause **manuell**"
+                    if st.session_state.dp_pause_art == "manuell"
+                    else f", Pause **{st.session_state.dp_intervall_min} Min.**"
+                )
+                if st.session_state.dp_modus == "intervall"
+                else ""
+            )
+        )
+
+    if dp_untertab == "auto":
+        st.session_state.dp_modus = st.radio(
+            "Betriebsmodus",
+            options=["dauerbetrieb", "intervall"],
+            format_func=lambda m: "Dauerbetrieb" if m == "dauerbetrieb" else "Intervalle",
+            horizontal=True,
+            key="dp_akquise_auto_modus",
+        )
+        if st.session_state.dp_modus == "intervall":
+            _dp_intervall_optionen(len(kandidaten_aktuell))
+        if st.session_state.dp_aktiv and st.session_state.dp_modus == "intervall":
+            lauf_von = int(st.session_state.get("dp_lauf_von") or st.session_state.dp_ds_von)
+            lauf_bis = int(st.session_state.get("dp_lauf_bis") or st.session_state.dp_ds_bis)
+            st.caption(
+                f"Lauf: Datensätze **{lauf_von}–{lauf_bis}** von **{st.session_state.dp_ds_gesamt or len(kandidaten_aktuell)}** "
+                f"(aktuell {index + 1 if index < gesamt else gesamt} von {gesamt} im Lauf)"
+            )
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            if st.button("▶ Start", key="dp_auto_start", use_container_width=True):
+                _dp_pflege_starten()
+                st.rerun()
+        with c2:
+            if st.button("⏸ Stopp", key="dp_auto_stop", use_container_width=True):
+                st.session_state.dp_aktiv = False
+                _dp_browser_schliessen()
+                st.rerun()
+        with c3:
+            if st.button("↺ Zurücksetzen", key="dp_auto_reset", use_container_width=True):
+                _dp_abschluss_aufraeumen()
+                st.session_state.dp_ergebnisse = []
+                st.session_state.dp_naechste_zeit = None
+                st.session_state.dp_manuell_bereit = False
+                st.rerun()
+
+        c_stat1, c_stat2, c_stat3 = st.columns(3)
+        c_stat1.metric("Kandidaten", gesamt)
+        c_stat2.metric("Bearbeitet", min(index, gesamt))
+        c_stat3.metric(
+            "Status",
+            "Läuft" if st.session_state.dp_aktiv and not fertig else ("Fertig" if fertig else "Pausiert"),
+        )
+
+        if gesamt == 0:
+            st.info(
+                f"Keine Firmen in Akquiseklasse {st.session_state.dp_akquiseklasse} "
+                "ohne crm_personen-Eintrag."
+            )
+            if st.session_state.dp_aktiv:
+                st.session_state.dp_aktiv = False
+        elif fertig:
+            if st.session_state.dp_fertig_meldung:
+                m = st.session_state.dp_fertig_meldung
+                st.success(
+                    f"Akquiseklasse **{m['klasse']}** abgeschlossen "
+                    f"({m['gesamt']} Firmen bearbeitet, {m['erfolge']} mit Daten)."
+                )
+            else:
+                st.success(
+                    f"Akquiseklasse {st.session_state.dp_akquiseklasse} abgeschlossen "
+                    f"({gesamt} Firmen)."
+                )
+            c_neu, c_prot = st.columns(2)
+            with c_neu:
+                if st.button("▶ Neuen Lauf starten", key="dp_fertig_neustart", use_container_width=True):
+                    _dp_abschluss_aufraeumen()
+                    _dp_pflege_starten()
+                    st.rerun()
+            with c_prot:
+                if st.button("Zum Protokoll", key="dp_fertig_protokoll", use_container_width=True):
+                    st.session_state.dp_goto_untertab = "protokoll"
+                    st.rerun()
+        elif not st.session_state.dp_aktiv:
+            st.info("Bereit — Akquiseklasse und Modus wählen, dann **▶ Start**.")
+        else:
+            if st.session_state.dp_manuell_bereit:
+                st.info("Datensatz bearbeitet — Ergebnis prüfen (Protokoll), dann nächster Schritt.")
+                if st.button("▶ Nächster Datensatz", key="dp_manuell_weiter", use_container_width=True):
+                    st.session_state.dp_manuell_bereit = False
+                    st.rerun()
+            else:
+                naechste = kandidaten.iloc[index]
+                firma_label = " ".join(
+                    p for p in (
+                        str(naechste.get("nama") or "").strip(),
+                        str(naechste.get("nameb") or "").strip(),
+                    ) if p
+                )
+                st.markdown(f"**Nächste Firma:** {firma_label} ({naechste.get('ort', '')})")
+
+                jetzt = datetime.now()
+                warte_aktiv = (
+                    st.session_state.dp_modus == "intervall"
+                    and st.session_state.dp_pause_art == "minuten"
+                    and st.session_state.dp_naechste_zeit
+                    and jetzt < st.session_state.dp_naechste_zeit
+                )
+                if warte_aktiv:
+                    rest = st.session_state.dp_naechste_zeit - jetzt
+                    min_rest = max(1, int(rest.total_seconds() // 60) + 1)
+                    st.info(
+                        f"Intervall-Pause: nächste Firma in ca. {min_rest} Min. "
+                        f"({st.session_state.dp_naechste_zeit.strftime('%H:%M')})."
+                    )
+                    if st.button("Jetzt weiter", key="dp_intervall_skip"):
+                        st.session_state.dp_naechste_zeit = None
+                        st.rerun()
+
+                if not warte_aktiv:
+                    if st.session_state.dp_browser_session is None:
+                        st.session_state.dp_browser_session = LiveWebBrowserSession()
+                    with st.spinner(f"KI-Datenpflege: {firma_label} …"):
+                        erg = pflege_eine_firma(
+                            naechste,
+                            browser_session=st.session_state.dp_browser_session,
+                        )
+                    st.session_state.dp_ergebnisse.insert(0, ergebnis_zu_dict(erg))
+                    st.session_state.dp_index = index + 1
+                    if erg.ok:
+                        st.success(f"{firma_label}: {erg.detail}")
+                    elif erg.status == "uebersprungen":
+                        st.warning(f"{firma_label}: {erg.fehler}")
+                    else:
+                        st.error(f"{firma_label}: {erg.fehler or erg.status}")
+
+                    if st.session_state.dp_index >= gesamt:
+                        _dp_pflege_abschliessen(gesamt)
+                        st.rerun()
+                    elif st.session_state.dp_modus == "intervall" and st.session_state.dp_aktiv:
+                        if st.session_state.dp_pause_art == "manuell":
+                            st.session_state.dp_manuell_bereit = True
+                            st.session_state.dp_naechste_zeit = None
+                            st.rerun()
+                        st.session_state.dp_naechste_zeit = jetzt + timedelta(
+                            minutes=int(st.session_state.dp_intervall_min)
+                        )
+                    if (
+                        st.session_state.dp_fertig_meldung is None
+                        and st.session_state.dp_index < gesamt
+                        and st.session_state.dp_aktiv
+                        and st.session_state.dp_modus == "dauerbetrieb"
+                    ):
+                        if not LIVE_WEB_HEADLESS:
+                            import time
+
+                            time.sleep(2)
+                        st.rerun()
+
+    elif dp_untertab == "protokoll":
+        if not st.session_state.dp_ergebnisse:
+            st.info("Noch keine Läufe in dieser Sitzung.")
+        else:
+            st.dataframe(
+                pd.DataFrame(st.session_state.dp_ergebnisse),
+                use_container_width=True,
+                hide_index=True,
+            )
 
 # --- REITER 3: AGENDA & NOTIZEN ---
 elif haupttab == "agenda":

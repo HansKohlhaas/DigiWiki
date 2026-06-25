@@ -69,12 +69,21 @@ ping 127.0.0.1 -n 3 >nul
 REM Port 8501 muss frei sein – sonst zweite Instanz / Connection-Fehler
 powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%digiwiki_port_frei.ps1" >nul 2>&1
 if errorlevel 1 (
-    echo [WARNUNG] Port 8501 noch belegt – zweiter Bereinigungslauf ...
+    echo [WARNUNG] Port 8501 noch belegt – erzwinge Stopp ...
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%digiwiki_stop_streamlit.ps1"
+    ping 127.0.0.1 -n 3 >nul
     powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%digiwiki_cleanup.ps1" >nul 2>&1
     ping 127.0.0.1 -n 3 >nul
     powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%digiwiki_port_frei.ps1"
     if errorlevel 1 (
-        echo [FEHLER] Port 8501 blockiert. Task-Manager: python.exe beenden, dann erneut starten.
+        echo [FEHLER] Port 8501 blockiert.
+        echo.
+        echo  Ursache oft: Streamlit wurde als Administrator gestartet
+        echo  ^(z. B. install_dauerbetrieb.bat oder Keepalive als Admin^).
+        echo  Normaler start.bat kann diesen Prozess dann nicht beenden.
+        echo.
+        echo  Loesung: digiwiki_stop_streamlit_admin.bat als Administrator
+        echo  Danach erneut start.bat ^(ohne Admin-Rechte^).
         powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%digiwiki_start_lock.ps1" -Action Release >nul 2>&1
         pause
         exit /b 1
@@ -170,9 +179,9 @@ if defined LAN_IP (
 )
 echo.
 echo  HANDY (von zuhause - Tailscale verbunden^):
-if defined TAILSCALE_HTTPS (
-    echo     PRIMAER:  !TAILSCALE_HTTPS!
-    echo     Fallback: http://!TAILSCALE_IP!:8501
+if defined TAILSCALE_IP (
+    echo     PRIMAER:  http://!TAILSCALE_IP!:8501
+    if defined TAILSCALE_HTTPS echo     Optional: !TAILSCALE_HTTPS!
 ) else (
     echo     PRIMAER:  !TAILSCALE_HANDY_URL!
 )
@@ -184,7 +193,8 @@ echo  Android: Privates DNS AUS, Akku-Optimierung Tailscale AUS
 echo.
 echo  Hinweis: Streamlit laeuft im Hintergrund (kein zweites Fenster).
 echo  Debug mit sichtbarem Fenster: digiwiki_run_streamlit.bat
-echo  Keepalive-Task (empfohlen): install_keepalive_task.bat
+echo  Keepalive-Task (empfohlen): install_dauerbetrieb.bat
+echo  Diagnose Erreichbarkeit: digiwiki_dauerbetrieb_diag.bat
 echo ============================================================
 echo.
 

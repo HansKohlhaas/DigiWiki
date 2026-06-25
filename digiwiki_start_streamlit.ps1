@@ -49,6 +49,13 @@ $proc = Start-Process -FilePath $python `
     -WindowStyle Hidden `
     -PassThru
 
-$proc.Id | Out-File -FilePath $pidFile -Encoding ascii -Force
-Write-Host "STARTED=$($proc.Id)"
+. (Join-Path $root 'digiwiki_erreichbarkeit.ps1')
+Start-Sleep -Seconds 3
+$portPid = Sync-DigiWikiStreamlitPidFile -PidFile $pidFile
+if ($portPid -le 0) {
+    $proc.Id | Out-File -FilePath $pidFile -Encoding ascii -Force
+    Write-Host "STARTED=$($proc.Id)"
+} else {
+    Write-Host "STARTED=$portPid"
+}
 exit 0

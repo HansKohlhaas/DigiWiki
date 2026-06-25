@@ -19,6 +19,9 @@ Persönliches Wissens- und CRM-System für DigiBest: semantische Dokumentensuche
 | `11_wiki_api.py` | FastAPI für externes CRM |
 | `ask_wiki.py` | RAG / Wiki-Abfragen |
 | `antworten_export.py` | Markierte Antworten zusammenfassen → Ordner `Antworten/` |
+| `datenbank_pflege.py` | KI-Datenbankpflege (Live-Web → crm_personen) |
+| `firmen_live_recherche.py` / `firmen_live_personen.py` | Live-Web-Impressum, Personen-Extraktion |
+| `crm_funktion_mapping.py` | Synonym-Zuordnung `crm_funktion_synonyme` (CLI) |
 | `Antworten/` | Exportierte Antwort-Sammlungen (Markdown) |
 | `config.py` | Pfade und Einstellungen |
 | `start.bat` | Start inkl. Tailscale & Helfer |

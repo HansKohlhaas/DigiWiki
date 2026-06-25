@@ -52,7 +52,7 @@ Oben sehen Sie:
 │  📊 System-Status (aufklappbar)              │
 │  🎤 Kommando-Feld + 🚀 Ausführen             │
 ├──────────────────────────────────────────────┤
-│  💬 Wiki & Daten | 📬 Mails | 📅 Agenda     │  ← Haupt-Bereiche
+│  💬 Wiki & Daten | 📬 Mails | 🛠️ Datenbankpflege | 📅 Agenda     │  ← Haupt-Bereiche
 ├──────────────────────────────────────────────┤
 │  … Inhalt des gewählten Bereichs …           │
 └──────────────────────────────────────────────┘
@@ -75,12 +75,13 @@ Tippen → **🚀 Ausführen** drücken.
 
 ---
 
-## 4. Die drei Haupt-Bereiche
+## 4. Die Haupt-Bereiche
 
 | Bereich | Wofür? | Am Handy? |
 |---------|--------|-----------|
 | **💬 Wiki & Daten** | Fragen & Antworten (Hauptfunktion) | ✅ Ja |
 | **📬 Mails & Kontakte** | E-Mail schreiben, beantworten, WhatsApp | ⚠️ Teilweise (Entwürfe ja, Versand oft nur am PC) |
+| **🛠️ Datenbankpflege** | Firmen ohne Ansprechpartner per Live-Web anreichern (KI) | ⚠️ Nur am PC sinnvoll (läuft lange, Browser nötig) |
 | **📅 Agenda & Notizen** | Termine, Aufgaben, Notizen | ⚠️ Anzeige ja; Outlook am PC nötig |
 
 **Für den Einstieg:** Bleiben Sie bei **💬 Wiki & Daten**.
@@ -452,7 +453,48 @@ DigiWiki speichert Tabellen **nicht automatisch** als Datei. Was Sie brauchen, k
 
 ---
 
-## 18. Hilfe holen
+## 18. Bereich „Datenbankpflege (KI)“
+
+**Zweck:** Firmen in einer **Akquiseklasse**, die noch **keinen Eintrag in `crm_personen`** haben, automatisch über die **Firmen-Website** (Impressum) mit Geschäftsführung / Führungskräften anreichern und ins CRM schreiben.
+
+**Voraussetzung:** PC mit laufendem DigiWiki, gültige Firmen-URL in den Stammdaten, ggf. sichtbarer Chrome-Browser (bei Cookie-Wänden).
+
+### Aufbau
+
+| Unterbereich | Inhalt |
+|--------------|--------|
+| **⚙ Einstellungen** | Akquiseklasse, Modus, Start/Stopp |
+| **▶ Auto-Pflege** | Laufende Bearbeitung, Fortschritt, „Nächster Datensatz“ |
+| **📋 Protokoll** | Ergebnis je Firma (OK / Fehler / übersprungen) |
+
+### Schritt für Schritt
+
+1. Hauptbereich **🛠️ Datenbankpflege** wählen  
+2. **Akquiseklasse** (1–4) wählen — es erscheinen nur Firmen **ohne** bestehenden Personen-Eintrag  
+3. **Betriebsmodus** wählen:
+   - **Dauerbetrieb:** bearbeitet alle Kandidaten der Klasse nacheinander  
+   - **Intervalle:** nur einen **Datensatz-Bereich** (Von/Bis, nummeriert 1 … n) und Pause:
+     - **Manuell:** nach jedem Datensatz stoppen → Ergebnis prüfen → **„Nächster Datensatz“**  
+     - **Automatisch:** Wartezeit in Minuten zwischen den Firmen  
+4. **▶ Start** — pro Firma: Website → Impressum → Namen extrahieren  
+5. **KI-Plausibilität** prüft Namen, setzt **Anrede**, **funktionid** und **Funktionsbezeichnung** (über bekannte Berufsbezeichnungen in der CRM-Synonym-Tabelle)  
+6. Gültige Personen werden in **crm_personen** geschrieben, Stammdaten ggf. aktualisiert (`update_status` = KI-Datenpflege)  
+7. **⏸ Stopp** jederzeit möglich; **↺ Zurücksetzen** löscht den Lauf
+
+### Hinweise
+
+| Thema | Verhalten |
+|-------|-----------|
+| **Ungültige URL** | Firma wird übersprungen (Prüfung vor Live-Abruf) |
+| **Cookie-Banner / Bot-Schutz** | Persistenter Chrome-Profilordner; bei Akquiseklasse 2 ggf. Browser sichtbar lassen |
+| **Keine Personen im Impressum** | Eintrag im Protokoll als Fehler/übersprungen |
+| **Laufzeit** | Pro Firma mehrere Sekunden bis Minuten — PC nicht schlafen lassen |
+
+Technische Feinabstimmung (`.env`, Headless, Pause): Administrator.
+
+---
+
+## 19. Hilfe holen
 
 | Problem | An wen? |
 |---------|---------|
@@ -465,7 +507,7 @@ DigiWiki speichert Tabellen **nicht automatisch** als Datei. Was Sie brauchen, k
 
 ---
 
-## 19. Alles auf einer Seite – Merkkarte
+## 20. Alles auf einer Seite – Merkkarte
 
 ```
 ZUGANG:     Tailscale grün → Lesezeichen öffnen
@@ -482,4 +524,4 @@ GRENZEN:    Nur Firmenwissen, PC muss laufen, KI prüfen!
 
 ---
 
-*Stand: Juni 2026 · Technische Einrichtung: `Anleitung_Nutzer_Handy.md` · PC-Administration: separate Administrator-Anleitung.*
+*Stand: 24.06.2026 · Technische Einrichtung: `Anleitung_Nutzer_Handy.md` · PC-Administration: separate Administrator-Anleitung.*
